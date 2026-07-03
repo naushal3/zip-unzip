@@ -1,0 +1,17 @@
+{
+  "settings": {
+    "theme": "dark",
+    "concurrencyLimit": 1,
+    "overwritePolicy": "timestamp",
+    "excludedExtensions": [
+      ".log"
+    ]
+  },
+  "recentDirectories": [
+    "D:\\production\\VML\\AUSUVM0015\\AUSUVM0015_PD_SLTP_SEEK_Offsite_Digital_Banner",
+    "C:\\Users\\naushad\\ansel",
+    "C:\\Users\\naushad\\Desktop\\MD-Banner",
+    "D:\\production\\VML\\AUSUVM0015\\AUSUVM0015_PD_SLTP_SEEK_Onsite_Digital_Banner",
+    "C:\\Users\\naushad\\Desktop\\Antigravity\\zip-unzip\\backend\\test-env"
+  ]
+}

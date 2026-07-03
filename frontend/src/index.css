@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-brand: #8b5cf6;
+  --color-brand-hover: #7c3aed;
+  
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+@layer base {
+  :root {
+    --bg-main: #0f0f0f;
+    --bg-secondary: #181818;
+    --bg-card: #1f1f1f;
+    --text-main: #ffffff;
+    --text-muted: #9ca3af;
+    --border-color: #2e2e2e;
+    --glass-bg: rgba(31, 31, 31, 0.6);
+    --glass-border: rgba(255, 255, 255, 0.05);
+    --glass-shadow: rgba(0, 0, 0, 0.5);
+    --input-bg: #181818;
+  }
+
+  :root.light {
+    --bg-main: #f8fafc;
+    --bg-secondary: #f1f5f9;
+    --bg-card: #ffffff;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --border-color: #e2e8f0;
+    --glass-bg: rgba(255, 255, 255, 0.6);
+    --glass-border: rgba(15, 23, 42, 0.05);
+    --glass-shadow: rgba(0, 0, 0, 0.05);
+    --input-bg: #f1f5f9;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    font-family: 'Outfit', 'Inter', system-ui, sans-serif;
+    transition: background-color 0.3s, color 0.3s;
+    overflow-x: hidden;
+  }
+}
+
+/* Custom premium styles */
+
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 32px 0 var(--glass-shadow);
+}
+
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(139, 92, 246, 0.3);
+  box-shadow: 0 12px 24px 0 rgba(139, 92, 246, 0.15);
+}
+
+.gradient-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+  color: #ffffff;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.gradient-btn:hover:not(:disabled) {
+  opacity: 0.95;
+  transform: scale(1.02);
+  box-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
+}
+
+.gradient-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.2);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.4);
+}
+
+/* Terminal logs blinker */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  background-color: #8b5cf6;
+  animation: blink 1s infinite;
+  vertical-align: middle;
+}
