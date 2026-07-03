@@ -318,6 +318,15 @@ class ProcessQueue {
       this.isProcessing = false;
       userState.operations.status = 'idle';
       userState.operations.endTime = Date.now();
+      
+      try {
+        if (userState.currentDirectory) {
+          scanSelectedDirectory(userState.currentDirectory, this.userId);
+        }
+      } catch (e) {
+        console.error('Failed to rescan directory on queue finish:', e);
+      }
+      
       logMessage(`Batch processing completed. Success: ${userState.operations.success}, Failed: ${userState.operations.failed}`, 'success', this.userId);
       this.notifyClients();
     }
@@ -519,6 +528,13 @@ class ProcessQueue {
     userState.operations.processed++;
     if (success) {
       userState.operations.success++;
+      try {
+        if (userState.currentDirectory) {
+          scanSelectedDirectory(userState.currentDirectory, this.userId);
+        }
+      } catch (e) {
+        console.error('Failed to rescan directory after task completion:', e);
+      }
     } else {
       userState.operations.failed++;
     }

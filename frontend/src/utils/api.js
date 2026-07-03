@@ -23,12 +23,30 @@ function getRequestHeaders(extraHeaders = {}) {
   return headers;
 }
 
+// Centered fetch response handling to handle HTML/JSON and errors gracefully
+async function handleResponse(res) {
+  if (!res.ok) {
+    let errMsg = `Request failed: ${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data && data.error) errMsg = data.error;
+    } catch (e) {
+      // Content is not JSON (e.g., HTML 404/500 page)
+    }
+    throw new Error(errMsg);
+  }
+  try {
+    return await res.json();
+  } catch (e) {
+    throw new Error('Invalid response format from server');
+  }
+}
+
 export async function fetchStatus() {
   const res = await fetch(`${getApiBase()}/status`, {
     headers: getRequestHeaders()
   });
-  if (!res.ok) throw new Error('Failed to fetch status');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function selectDirectory(path) {
@@ -37,11 +55,7 @@ export async function selectDirectory(path) {
     headers: getRequestHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ path })
   });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || 'Failed to select directory');
-  }
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function scanDirectory() {
@@ -49,8 +63,7 @@ export async function scanDirectory() {
     method: 'POST',
     headers: getRequestHeaders()
   });
-  if (!res.ok) throw new Error('Failed to scan directory');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function browsePath(path = '') {
@@ -58,8 +71,7 @@ export async function browsePath(path = '') {
   const res = await fetch(`${getApiBase()}/browse${query}`, {
     headers: getRequestHeaders()
   });
-  if (!res.ok) throw new Error('Failed to browse path');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function processItems(items, action) {
@@ -68,8 +80,7 @@ export async function processItems(items, action) {
     headers: getRequestHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ items, action })
   });
-  if (!res.ok) throw new Error('Failed to process items');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function resolveConflict(itemPath, decision) {
@@ -78,8 +89,7 @@ export async function resolveConflict(itemPath, decision) {
     headers: getRequestHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ itemPath, decision })
   });
-  if (!res.ok) throw new Error('Failed to resolve conflict');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function cancelQueue() {
@@ -87,8 +97,7 @@ export async function cancelQueue() {
     method: 'POST',
     headers: getRequestHeaders()
   });
-  if (!res.ok) throw new Error('Failed to cancel processing');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function deleteItem(path) {
@@ -97,11 +106,7 @@ export async function deleteItem(path) {
     headers: getRequestHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ path })
   });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || 'Failed to delete item');
-  }
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function clearLogs() {
@@ -109,16 +114,14 @@ export async function clearLogs() {
     method: 'POST',
     headers: getRequestHeaders()
   });
-  if (!res.ok) throw new Error('Failed to clear logs');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function fetchSettings() {
   const res = await fetch(`${getApiBase()}/settings`, {
     headers: getRequestHeaders()
   });
-  if (!res.ok) throw new Error('Failed to fetch settings');
-  return res.json();
+  return handleResponse(res);
 }
 
 export async function saveSettings(settings) {
@@ -127,8 +130,7 @@ export async function saveSettings(settings) {
     headers: getRequestHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(settings)
   });
-  if (!res.ok) throw new Error('Failed to save settings');
-  return res.json();
+  return handleResponse(res);
 }
 
 export function getDownloadUrl(filePath) {
@@ -144,11 +146,7 @@ export async function openNativeDirectoryDialog() {
     method: 'POST',
     headers: getRequestHeaders()
   });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || 'Failed to open native dialog');
-  }
-  return res.json();
+  return handleResponse(res);
 }
 
 // Upload local files/folders to the remote workspace with progress reporting
@@ -160,7 +158,6 @@ export function uploadFiles(filesList, onProgress) {
     // Append files to form data
     for (let i = 0; i < filesList.length; i++) {
       const file = filesList[i];
-      // originalname is mapped to file.webkitRelativePath (or name) to preserve structure
       const uploadPath = file.webkitRelativePath || file.name;
       formData.append('files', file, uploadPath);
     }
@@ -182,10 +179,22 @@ export function uploadFiles(filesList, onProgress) {
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (e) {
+          reject(new Error('Invalid response format from server'));
+        }
       } else {
-        const errResponse = JSON.parse(xhr.responseText || '{}');
-        reject(new Error(errResponse.error || 'Upload failed'));
+        let errMsg = `Upload failed with status code ${xhr.status}`;
+        try {
+          const errResponse = JSON.parse(xhr.responseText || '{}');
+          if (errResponse.error) errMsg = errResponse.error;
+        } catch (e) {
+          if (xhr.statusText) {
+            errMsg = `${xhr.status} ${xhr.statusText}`;
+          }
+        }
+        reject(new Error(errMsg));
       }
     };
 
@@ -196,4 +205,5 @@ export function uploadFiles(filesList, onProgress) {
     xhr.send(formData);
   });
 }
+
 
