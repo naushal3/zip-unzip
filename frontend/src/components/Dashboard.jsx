@@ -9,7 +9,8 @@ import {
   AlertOctagon,
   Moon,
   Sun,
-  LogOut
+  LogOut,
+  FolderOpen
 } from 'lucide-react';
 
 import {
@@ -68,6 +69,12 @@ export default function Dashboard() {
     localStorage.getItem('ZIP_MANAGER_API_BASE') || 'http://localhost:5000/api'
   );
 
+  // Mixed / auto-processing content state
+  const [showMixedModal, setShowMixedModal] = useState(false);
+  const [modalType, setModalType] = useState('mixed'); // 'mixed' | 'folders-only' | 'zips-only'
+  const [modalCounts, setModalCounts] = useState({ folders: 0, zips: 0 });
+  const [lastPromptedKey, setLastPromptedKey] = useState('');
+
   // Establish SSE connection
   useEffect(() => {
     let eventSource;
@@ -110,6 +117,70 @@ export default function Dashboard() {
       if (timer) clearTimeout(timer);
     };
   }, [backendUrl, currentUser]);
+
+  // Mixed / auto-processing content prompts when directory changes
+  useEffect(() => {
+    if (!appState.currentDirectory || !appState.items || appState.items.length === 0) {
+      return;
+    }
+
+    const isIdle = appState.operations && appState.operations.status === 'idle';
+    const hasConflicts = appState.conflicts && appState.conflicts.length > 0;
+    if (!isIdle || hasConflicts) {
+      return;
+    }
+
+    const currentKey = `${appState.currentDirectory}:${appState.items.length}`;
+    if (lastPromptedKey === currentKey) {
+      return;
+    }
+
+    const folders = appState.items.filter(i => i.type === 'folder' && i.status === 'Waiting');
+    const zips = appState.items.filter(i => i.type === 'zip' && i.status === 'Waiting');
+
+    if (folders.length > 0 && zips.length > 0) {
+      setModalType('mixed');
+      setModalCounts({ folders: folders.length, zips: zips.length });
+      setShowMixedModal(true);
+      setLastPromptedKey(currentKey);
+    } else if (folders.length > 0 && zips.length === 0) {
+      setModalType('folders-only');
+      setModalCounts({ folders: folders.length, zips: 0 });
+      setShowMixedModal(true);
+      setLastPromptedKey(currentKey);
+    } else if (zips.length > 0 && folders.length === 0) {
+      setModalType('zips-only');
+      setModalCounts({ folders: 0, zips: zips.length });
+      setShowMixedModal(true);
+      setLastPromptedKey(currentKey);
+    }
+  }, [appState.items, appState.currentDirectory, appState.operations, appState.conflicts, lastPromptedKey]);
+
+  const handleZipOpenFolders = () => {
+    const folders = appState.items.filter(i => i.type === 'folder' && i.status === 'Waiting');
+    if (folders.length > 0) {
+      handleProcessBatch(folders.map(f => f.path), 'zip');
+    }
+    setShowMixedModal(false);
+  };
+
+  const handleUnzipZipFiles = () => {
+    const zips = appState.items.filter(i => i.type === 'zip' && i.status === 'Waiting');
+    if (zips.length > 0) {
+      handleProcessBatch(zips.map(z => z.path), 'extract');
+    }
+    setShowMixedModal(false);
+  };
+
+  const handleProcessBoth = () => {
+    const folders = appState.items.filter(i => i.type === 'folder' && i.status === 'Waiting');
+    const zips = appState.items.filter(i => i.type === 'zip' && i.status === 'Waiting');
+    const allPaths = [...folders.map(f => f.path), ...zips.map(z => z.path)];
+    if (allPaths.length > 0) {
+      handleProcessBatch(allPaths, 'auto');
+    }
+    setShowMixedModal(false);
+  };
 
   const handleSelectDirectory = async (path) => {
     const loadingToast = toast.loading(`Scanning folder: ${path}...`);
@@ -422,6 +493,91 @@ export default function Dashboard() {
                 className="w-full py-2.5 px-4 bg-[var(--bg-card)] hover:bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-main)] font-semibold rounded-xl text-sm transition-all active:scale-95"
               >
                 {activeConflict.type === 'zip' ? 'Skip Compression' : 'Skip Extraction'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mixed / Auto-processing Content Confirmation Modal */}
+      {showMixedModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="glass-panel w-full max-w-md rounded-[20px] shadow-2xl p-6 border-brand/30 animate-[bounceIn_0.3s_ease-out]">
+            <div className="flex items-center gap-3 text-brand mb-4">
+              <FolderLock className="w-8 h-8 shrink-0 animate-pulse" />
+              <div>
+                <h3 className="font-bold text-lg text-[var(--text-main)]">
+                  {modalType === 'mixed' ? 'Mixed Content Detected' : (modalType === 'folders-only' ? 'Folders Found' : 'ZIP Archives Found')}
+                </h3>
+                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">
+                  Workspace Auto-Process Action
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-[var(--bg-secondary)] p-4 rounded-xl border border-[var(--border-color)] mb-5 text-sm space-y-2">
+              <p className="text-[var(--text-muted)] font-medium">We found:</p>
+              <ul className="list-disc list-inside text-xs font-mono space-y-1 text-[var(--text-main)]">
+                {modalCounts.folders > 0 && <li>{modalCounts.folders} folders</li>}
+                {modalCounts.zips > 0 && <li>{modalCounts.zips} ZIP files</li>}
+              </ul>
+              <p className="text-xs text-[var(--text-muted)] mt-2 leading-relaxed">
+                What operation would you like to perform inside this parent directory?
+              </p>
+            </div>
+
+            <div className="space-y-2.5">
+              {modalType === 'mixed' && (
+                <>
+                  <button
+                    onClick={handleZipOpenFolders}
+                    className="w-full py-2.5 px-4 bg-brand text-white font-semibold rounded-xl text-sm transition-all hover:bg-brand-hover active:scale-95 shadow-md flex items-center justify-center gap-2"
+                  >
+                    <FileArchive className="w-4 h-4" />
+                    ZIP Open Folders
+                  </button>
+                  <button
+                    onClick={handleUnzipZipFiles}
+                    className="w-full py-2.5 px-4 bg-warning text-white font-semibold rounded-xl text-sm transition-all hover:bg-warning/90 active:scale-95 shadow-md flex items-center justify-center gap-2"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    UNZIP ZIP Files
+                  </button>
+                  <button
+                    onClick={handleProcessBoth}
+                    className="w-full py-2.5 px-4 bg-success text-white font-semibold rounded-xl text-sm transition-all hover:bg-success/90 active:scale-95 shadow-md flex items-center justify-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Process Both
+                  </button>
+                </>
+              )}
+
+              {modalType === 'folders-only' && (
+                <button
+                  onClick={handleZipOpenFolders}
+                  className="w-full py-2.5 px-4 bg-brand text-white font-semibold rounded-xl text-sm transition-all hover:bg-brand-hover active:scale-95 shadow-md flex items-center justify-center gap-2"
+                >
+                  <FileArchive className="w-4 h-4" />
+                  ZIP Open Folders
+                </button>
+              )}
+
+              {modalType === 'zips-only' && (
+                <button
+                  onClick={handleUnzipZipFiles}
+                  className="w-full py-2.5 px-4 bg-warning text-white font-semibold rounded-xl text-sm transition-all hover:bg-warning/90 active:scale-95 shadow-md flex items-center justify-center gap-2"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  UNZIP ZIP Files
+                </button>
+              )}
+
+              <button
+                onClick={() => setShowMixedModal(false)}
+                className="w-full py-2.5 px-4 bg-[var(--bg-card)] hover:bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-main)] font-semibold rounded-xl text-sm transition-all active:scale-95"
+              >
+                Cancel
               </button>
             </div>
           </div>
