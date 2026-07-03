@@ -411,6 +411,12 @@ class ProcessQueue {
       this.notifyClients();
     }, this.userId);
 
+    console.log("ZIP created:", targetZipPath);
+    console.log("Exists:", fs.existsSync(targetZipPath));
+    if (fs.existsSync(targetZipPath)) {
+      console.log("Size:", fs.statSync(targetZipPath).size);
+    }
+
     updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
     logMessage(`[ZIP] Folder ${baseName} compressed successfully to ${path.basename(targetZipPath)}`, 'success', this.userId);
   }
