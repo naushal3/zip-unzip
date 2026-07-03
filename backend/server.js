@@ -78,18 +78,24 @@ function isPathSecure(targetPath, userId) {
   return true; // Local mode allows other drives
 }
 
+// Sanitize relative path and restore directory structure
+function restoreRelativePath(filename) {
+  const restored = filename.replace(/____/g, '/');
+  return sanitizeRelativePath(restored);
+}
+
 // Multer storage engine configuration
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const userId = req.headers['x-user-id'] || 'default';
-    const cleanPath = sanitizeRelativePath(file.originalname);
+    const cleanPath = restoreRelativePath(file.originalname);
     const targetDir = path.join(__dirname, 'workspace', userId, path.dirname(cleanPath));
     
     fs.mkdirSync(targetDir, { recursive: true });
     cb(null, targetDir);
   },
   filename: function (req, file, cb) {
-    const cleanPath = sanitizeRelativePath(file.originalname);
+    const cleanPath = restoreRelativePath(file.originalname);
     cb(null, path.basename(cleanPath));
   }
 });
@@ -294,6 +300,12 @@ app.post('/api/upload', upload.array('files'), (req, res) => {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files were uploaded' });
     }
+
+    console.log(`Saved ${req.files.length} files to workspace for user ${userId}:`);
+    req.files.forEach(f => {
+      const cleanPath = restoreRelativePath(f.originalname);
+      console.log(` - File: ${cleanPath} (${f.size} bytes)`);
+    });
 
     logMessage(`Successfully uploaded ${req.files.length} items to remote workspace`, 'success', userId);
 

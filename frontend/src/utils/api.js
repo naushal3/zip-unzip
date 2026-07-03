@@ -159,7 +159,8 @@ export function uploadFiles(filesList, onProgress) {
     for (let i = 0; i < filesList.length; i++) {
       const file = filesList[i];
       const uploadPath = file.webkitRelativePath || file.name;
-      formData.append('files', file, uploadPath);
+      const safeUploadPath = uploadPath.replace(/\//g, '____');
+      formData.append('files', file, safeUploadPath);
     }
 
     xhr.open('POST', `${getApiBase()}/upload`, true);

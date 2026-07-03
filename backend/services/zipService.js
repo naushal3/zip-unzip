@@ -359,6 +359,7 @@ class ProcessQueue {
   async handleZipTask(item) {
     updateItemStatus(item.path, { status: 'Scanning', progress: 10 }, this.userId);
     this.notifyClients();
+    logMessage(`[ZIP] Scanning files in directory: ${item.path}`, 'info', this.userId);
 
     const userState = getUserState(this.userId);
     const parentDir = userState.currentDirectory;
@@ -366,7 +367,7 @@ class ProcessQueue {
     let targetZipPath = path.join(parentDir, `${baseName}.zip`);
 
     if (isZipUpToDate(item.path, targetZipPath, this.userId)) {
-      logMessage(`Zip archive for ${baseName} is already up to date. Skipping compression.`, 'success', this.userId);
+      logMessage(`[ZIP] Zip archive for ${baseName} is already up to date. Skipping compression.`, 'success', this.userId);
       updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
       return;
     }
@@ -374,7 +375,7 @@ class ProcessQueue {
     if (fs.existsSync(targetZipPath)) {
       const decision = await this.resolveZipConflict(item.path, targetZipPath);
       if (decision === 'skip') {
-        logMessage(`Compression skipped for ${baseName}.zip by user decision.`, 'warning', this.userId);
+        logMessage(`[ZIP] Compression skipped for ${baseName}.zip by user decision.`, 'warning', this.userId);
         updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
         return;
       } else if (decision === 'timestamp') {
@@ -397,9 +398,9 @@ class ProcessQueue {
           }
         }
         targetZipPath = tempZipPath;
-        logMessage(`Zip already exists for ${baseName}. Renamed output file to ${newZipName}`, 'warning', this.userId);
+        logMessage(`[ZIP] Zip already exists for ${baseName}. Renamed output file to ${newZipName}`, 'warning', this.userId);
       } else {
-        logMessage(`Zip archive already exists for ${baseName}. Overwriting file.`, 'info', this.userId);
+        logMessage(`[ZIP] Zip archive already exists for ${baseName}. Overwriting file.`, 'info', this.userId);
         try {
           fs.rmSync(targetZipPath, { force: true });
         } catch (err) {
@@ -407,6 +408,8 @@ class ProcessQueue {
         }
       }
     }
+
+    logMessage(`[ZIP] Initiating archiver compression to target: ${targetZipPath}`, 'info', this.userId);
 
     updateItemStatus(item.path, { status: 'Zipping', progress: 15 }, this.userId);
     this.notifyClients();
@@ -417,12 +420,13 @@ class ProcessQueue {
     }, this.userId);
 
     updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
-    logMessage(`Folder ${baseName} zipped successfully`, 'success', this.userId);
+    logMessage(`[ZIP] Folder ${baseName} compressed successfully to ${path.basename(targetZipPath)}`, 'success', this.userId);
   }
 
   async handleExtractTask(item) {
     updateItemStatus(item.path, { status: 'Scanning', progress: 10 }, this.userId);
     this.notifyClients();
+    logMessage(`[UNZIP] Reading ZIP archive structure for: ${item.name}`, 'info', this.userId);
 
     const userState = getUserState(this.userId);
     const parentDir = userState.currentDirectory;
@@ -432,7 +436,7 @@ class ProcessQueue {
     if (fs.existsSync(targetDestPath)) {
       const decision = await this.resolveExtractionConflict(item.path, targetDestPath);
       if (decision === 'skip') {
-        logMessage(`Extraction skipped for ${item.name} by user decision.`, 'warning', this.userId);
+        logMessage(`[UNZIP] Extraction skipped for ${item.name} by user decision.`, 'warning', this.userId);
         updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
         return;
       } else if (decision === 'timestamp') {
@@ -453,11 +457,13 @@ class ProcessQueue {
           }
         }
         targetDestPath = tempPath;
-        logMessage(`Destination folder exists for ${item.name}. Output folder renamed to ${newDirName}`, 'warning', this.userId);
+        logMessage(`[UNZIP] Destination folder exists for ${item.name}. Output folder renamed to ${newDirName}`, 'warning', this.userId);
       } else if (decision === 'overwrite') {
-        logMessage(`Destination folder exists for ${item.name}. Overwriting existing contents.`, 'info', this.userId);
+        logMessage(`[UNZIP] Destination folder exists for ${item.name}. Overwriting existing contents.`, 'info', this.userId);
       }
     }
+
+    logMessage(`[UNZIP] Initiating extraction to directory: ${targetDestPath}`, 'info', this.userId);
 
     updateItemStatus(item.path, { status: 'Extracting', progress: 15 }, this.userId);
     this.notifyClients();
@@ -468,7 +474,7 @@ class ProcessQueue {
     }, this.userId);
 
     updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
-    logMessage(`Archive ${item.name} extracted successfully`, 'success', this.userId);
+    logMessage(`[UNZIP] Archive ${item.name} extracted successfully to ${baseName}/`, 'success', this.userId);
   }
 
   resolveExtractionConflict(itemPath, destPath) {
