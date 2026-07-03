@@ -192,12 +192,21 @@ export function zipFolder(folderPath, outputPath, onProgress, userId = 'default'
 
 // Unzip single file
 export async function unzipFile(zipPath, outputPath, onProgress, userId = 'default') {
+  console.log('ZIP PATH:', zipPath);
+  console.log('OUTPUT PATH:', outputPath);
+  const fileExists = fs.existsSync(zipPath);
+  console.log('Exists:', fileExists);
+  if (fileExists) {
+    console.log('Size:', fs.statSync(zipPath).size);
+  }
+
   logMessage(`[UNZIP] Found ZIP file: ${path.basename(zipPath)}`, 'info', userId);
   logMessage(`[UNZIP] Extracting to directory: ${outputPath}`, 'info', userId);
 
   const zip = new AdmZip(zipPath);
   const zipEntries = zip.getEntries();
   const total = zipEntries.length;
+  console.log('Entries:', total);
   if (total === 0) {
     onProgress(100);
     logMessage(`[UNZIP] ZIP file is empty: ${path.basename(zipPath)}`, 'warning', userId);
@@ -407,12 +416,17 @@ class ProcessQueue {
   }
 
   async handleExtractTask(item) {
+    console.log('[UNZIP] handleExtractTask called');
+    console.log(item);
+
     updateItemStatus(item.path, { status: 'Scanning', progress: 10 }, this.userId);
     this.notifyClients();
     logMessage(`[UNZIP] Reading ZIP archive structure for: ${item.name}`, 'info', this.userId);
 
     const userState = getUserState(this.userId);
     const parentDir = userState.currentDirectory;
+    console.log('userState.currentDirectory:', parentDir);
+
     const baseName = path.basename(item.path, '.zip');
     let targetDestPath = path.join(parentDir, baseName);
 
