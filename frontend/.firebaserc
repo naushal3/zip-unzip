@@ -1,5 +1,7 @@
 {
   "projects": {
     "default": "zip-unzip-ee838"
-  }
+  },
+  "targets": {},
+  "etags": {}
 }

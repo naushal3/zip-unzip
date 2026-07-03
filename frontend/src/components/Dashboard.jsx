@@ -31,6 +31,7 @@ import ControlPanel from './ControlPanel';
 import ActivityLogs from './ActivityLogs';
 import SettingsModal from './SettingsModal';
 import { useAuth } from '../context/AuthContext';
+import { auth } from '../firebase';
 
 export default function Dashboard() {
   const { currentUser, logoutUser } = useAuth();
@@ -73,7 +74,9 @@ export default function Dashboard() {
     let timer;
 
     function connect() {
-      eventSource = new EventSource(`${getApiBase()}/events`);
+      const uid = auth.currentUser?.uid;
+      const query = uid ? `?userId=${uid}` : '';
+      eventSource = new EventSource(`${getApiBase()}/events${query}`);
 
       eventSource.onopen = () => {
         setSseConnected(true);
@@ -106,7 +109,7 @@ export default function Dashboard() {
       if (eventSource) eventSource.close();
       if (timer) clearTimeout(timer);
     };
-  }, [backendUrl]);
+  }, [backendUrl, currentUser]);
 
   const handleSelectDirectory = async (path) => {
     const loadingToast = toast.loading(`Scanning folder: ${path}...`);

@@ -7,10 +7,45 @@ import {
   ChevronRight, 
   History,
   HardDrive,
-  UploadCloud
+  UploadCloud,
+  Info,
+  File,
+  RefreshCw,
+  CheckCircle2
 } from 'lucide-react';
-import { browsePath, openNativeDirectoryDialog } from '../utils/api';
+import { browsePath, openNativeDirectoryDialog, uploadFiles, getApiBase } from '../utils/api';
 import toast from 'react-hot-toast';
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+async function getFilesFromHandle(directoryHandle) {
+  const files = [];
+  async function read(handle, relativePath = '') {
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'file') {
+        const file = await entry.getFile();
+        const fullPath = relativePath ? `${relativePath}/${entry.name}` : `${directoryHandle.name}/${entry.name}`;
+        Object.defineProperty(file, 'webkitRelativePath', {
+          value: fullPath,
+          writable: true,
+          configurable: true
+        });
+        files.push(file);
+      } else if (entry.kind === 'directory') {
+        const subPath = relativePath ? `${relativePath}/${entry.name}` : `${directoryHandle.name}/${entry.name}`;
+        await read(entry, subPath);
+      }
+    }
+  }
+  await read(directoryHandle);
+  return files;
+}
 
 export default function DirectoryPicker({ 
   currentDirectory, 
@@ -28,11 +63,26 @@ export default function DirectoryPicker({
   const [loading, setLoading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
+  // Upload/Workspace state
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  const apiBase = getApiBase();
+  const isRemoteApi = apiBase.includes('onrender.com') || 
+    (!apiBase.includes('localhost') && !apiBase.includes('127.0.0.1') && apiBase.startsWith('http'));
+
+  const [workspaceMode, setWorkspaceMode] = useState(isRemoteApi ? 'remote' : 'local');
+
   useEffect(() => {
     if (currentDirectory) {
       setPathInput(currentDirectory);
     }
   }, [currentDirectory]);
+
+  useEffect(() => {
+    setWorkspaceMode(isRemoteApi ? 'remote' : 'local');
+  }, [isRemoteApi]);
 
   const handleSubmit = (e) => {
     if (e) e.preventDefault();
@@ -43,7 +93,6 @@ export default function DirectoryPicker({
     onSelectDirectory(pathInput.trim());
   };
 
-  // Fetch directory list for explorer
   const loadExplorerPath = async (targetPath = '') => {
     setLoading(true);
     try {
@@ -56,12 +105,35 @@ export default function DirectoryPicker({
     }
   };
 
-  const openExplorer = () => {
-    setShowExplorer(true);
-    loadExplorerPath(pathInput || '');
+  const openExplorer = async () => {
+    if (workspaceMode === 'remote') {
+      try {
+        if (window.showDirectoryPicker) {
+          const handle = await window.showDirectoryPicker();
+          toast.success(`Selected local folder: "${handle.name}"`);
+          setPathInput(handle.name);
+          setLoading(true);
+          const files = await getFilesFromHandle(handle);
+          setSelectedFiles(files);
+          setLoading(false);
+        } else {
+          const input = document.getElementById('directory-picker-fallback-input');
+          if (input) input.click();
+        }
+      } catch (err) {
+        setLoading(false);
+        if (err.name !== 'AbortError') {
+          toast.error(`Folder picker error: ${err.message}`);
+        }
+      }
+    } else {
+      setShowExplorer(true);
+      loadExplorerPath(pathInput || '');
+    }
   };
 
   const handleSelectExplorer = () => {
+    setPathInput(explorerData.currentPath);
     onSelectDirectory(explorerData.currentPath);
     setShowExplorer(false);
   };
@@ -80,19 +152,29 @@ export default function DirectoryPicker({
     e.preventDefault();
     setIsDragOver(false);
     
-    // Web browsers don't expose full local OS file paths for security.
-    // However, we can read the dropped file/directory name and offer guidance.
-    const items = e.dataTransfer.items;
-    if (items && items[0]) {
-      const entry = items[0].webkitGetAsEntry();
-      if (entry) {
-        toast.success(`Dropped folder/file: "${entry.name}" detected!`);
-        if (entry.isDirectory) {
-          toast((t) => (
-            <span>
-              To manage <b>{entry.name}</b>, please browse to its parent folder or paste its absolute path.
-            </span>
-          ), { duration: 5000 });
+    if (workspaceMode === 'remote') {
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        const filesArray = Array.from(e.dataTransfer.files);
+        setSelectedFiles(filesArray);
+        const firstFile = filesArray[0];
+        const relativePath = firstFile.webkitRelativePath || firstFile.name;
+        const rootName = relativePath.split('/')[0];
+        setPathInput(rootName);
+        toast.success(`Selected ${filesArray.length} items from drag & drop!`);
+      }
+    } else {
+      const items = e.dataTransfer.items;
+      if (items && items[0]) {
+        const entry = items[0].webkitGetAsEntry();
+        if (entry) {
+          toast.success(`Dropped folder/file: "${entry.name}" detected!`);
+          if (entry.isDirectory) {
+            toast((t) => (
+              <span>
+                To manage <b>{entry.name}</b>, please browse to its parent folder or paste its absolute path.
+              </span>
+            ), { duration: 5000 });
+          }
         }
       }
     }
@@ -110,10 +192,88 @@ export default function DirectoryPicker({
     }
   };
 
+  const handleFolderSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArray = Array.from(e.target.files);
+      setSelectedFiles(filesArray);
+      const firstFile = filesArray[0];
+      const relativePath = firstFile.webkitRelativePath || firstFile.name;
+      const rootName = relativePath.split('/')[0];
+      setPathInput(rootName);
+      toast.success(`Selected folder containing ${e.target.files.length} files`);
+    }
+  };
+
+  const handleFilesSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArray = Array.from(e.target.files);
+      setSelectedFiles(filesArray);
+      const firstFile = filesArray[0];
+      const relativePath = firstFile.webkitRelativePath || firstFile.name;
+      const rootName = relativePath.split('/')[0];
+      setPathInput(rootName);
+      toast.success(`Selected ${e.target.files.length} files`);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (selectedFiles.length === 0) {
+      toast.error('No files selected for upload');
+      return;
+    }
+
+    setUploading(true);
+    setUploadProgress(0);
+    const loadingToast = toast.loading(`Uploading ${selectedFiles.length} files to remote workspace...`);
+
+    try {
+      const res = await uploadFiles(selectedFiles, (progress) => {
+        setUploadProgress(progress);
+      });
+      toast.success('Workspace updated successfully!', { id: loadingToast });
+      setSelectedFiles([]);
+      if (res.path) {
+        onSelectDirectory(res.path);
+      }
+    } catch (err) {
+      toast.error(`Upload failed: ${err.message}`, { id: loadingToast });
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
-      {/* Search / Select Form */}
-      <form onSubmit={handleSubmit} className="relative flex gap-3">
+      {/* Mode Toggle Control */}
+      {!isRemoteApi && (
+        <div className="flex bg-[var(--bg-secondary)] p-1 rounded-xl w-fit border border-[var(--border-color)]">
+          <button
+            type="button"
+            onClick={() => setWorkspaceMode('local')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all ${
+              workspaceMode === 'local'
+                ? 'bg-brand text-white shadow-md'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+            }`}
+          >
+            Local Drives
+          </button>
+          <button
+            type="button"
+            onClick={() => setWorkspaceMode('remote')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all ${
+              workspaceMode === 'remote'
+                ? 'bg-brand text-white shadow-md'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+            }`}
+          >
+            Web Workspace
+          </button>
+        </div>
+      )}
+
+      {/* Main Path Input / Selection Form */}
+      <form onSubmit={workspaceMode === 'local' ? handleSubmit : (e) => { e.preventDefault(); handleUpload(); }} className="relative flex flex-col md:flex-row gap-3">
         <div 
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -127,9 +287,10 @@ export default function DirectoryPicker({
           <Folder className="absolute left-4 w-5 h-5 text-[var(--text-muted)]" />
           <input
             type="text"
-            value={pathInput}
-            onChange={(e) => setPathInput(e.target.value)}
-            placeholder="Type or paste a parent directory path... (e.g. C:\Projects\Assets)"
+            value={workspaceMode === 'local' ? pathInput : (selectedFiles.length > 0 ? `Selected Folder: ${selectedFiles[0].webkitRelativePath.split('/')[0]}` : (currentDirectory ? `Workspace: ${currentDirectory.split(/[\\/]/).pop()}` : ''))}
+            onChange={(e) => workspaceMode === 'local' && setPathInput(e.target.value)}
+            readOnly={workspaceMode === 'remote'}
+            placeholder={workspaceMode === 'local' ? "Type or paste a parent directory path... (e.g. C:\\Projects\\Assets)" : "Click Browse to select a local folder..."}
             className="w-full pl-12 pr-4 py-3.5 bg-transparent border-0 text-[var(--text-main)] placeholder-[var(--text-muted)] rounded-2xl focus:outline-none focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -137,53 +298,138 @@ export default function DirectoryPicker({
         <button
           type="button"
           onClick={openExplorer}
-          className="px-5 bg-[var(--bg-card)] border border-[var(--border-color)] hover:border-brand/40 text-[var(--text-main)] rounded-2xl flex items-center gap-2 hover:bg-[var(--bg-secondary)] transition-all active:scale-95 shadow-sm"
+          className="px-5 bg-[var(--bg-card)] border border-[var(--border-color)] hover:border-brand/40 text-[var(--text-main)] rounded-2xl flex items-center gap-2 hover:bg-[var(--bg-secondary)] transition-all active:scale-95 shadow-sm font-semibold whitespace-nowrap"
         >
           <FolderOpen className="w-4 h-4 text-brand" />
           <span>Browse</span>
         </button>
 
-        <button
-          type="button"
-          onClick={handleNativeBrowse}
-          className="px-5 bg-[var(--bg-card)] border border-[var(--border-color)] hover:border-brand/40 text-[var(--text-main)] rounded-2xl flex items-center gap-2 hover:bg-[var(--bg-secondary)] transition-all active:scale-95 shadow-sm"
-          title="Choose using OS native dialog picker"
-        >
-          <Folder className="w-4 h-4 text-brand" />
-          <span>Native Select</span>
-        </button>
+        {workspaceMode === 'local' && (
+          <button
+            type="button"
+            onClick={handleNativeBrowse}
+            className="px-5 bg-[var(--bg-card)] border border-[var(--border-color)] hover:border-brand/40 text-[var(--text-main)] rounded-2xl flex items-center gap-2 hover:bg-[var(--bg-secondary)] transition-all active:scale-95 shadow-sm font-semibold whitespace-nowrap"
+            title="Choose using OS native dialog picker"
+          >
+            <Folder className="w-4 h-4 text-brand" />
+            <span>Native Select</span>
+          </button>
+        )}
 
         <button
           type="submit"
-          className="gradient-btn px-6 py-3.5 rounded-2xl font-medium shadow-md flex items-center gap-2 active:scale-95"
+          disabled={workspaceMode === 'remote' && selectedFiles.length === 0}
+          className="gradient-btn px-6 py-3.5 rounded-2xl font-semibold shadow-md flex items-center gap-2 active:scale-95 disabled:opacity-50 whitespace-nowrap"
         >
-          Select Directory
+          {workspaceMode === 'local' ? 'Select Directory' : 'Upload & Process'}
         </button>
       </form>
 
-      {/* Drag & Drop Hint */}
-      <div 
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={`border-2 border-dashed rounded-2xl py-4 px-6 text-center text-sm transition-all duration-300 ${
-          isDragOver 
-            ? 'border-brand bg-brand/5 text-brand' 
-            : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-brand/20'
-        }`}
-      >
-        <div className="flex items-center justify-center gap-2">
-          <UploadCloud className="w-4 h-4 text-brand" />
-          <span>Drag & Drop target folders here to view them in ZIP Manager</span>
-        </div>
-      </div>
+      {/* Hidden input for directory selection fallback in remote mode */}
+      <input
+        type="file"
+        id="directory-picker-fallback-input"
+        webkitdirectory="true"
+        directory="true"
+        multiple
+        className="hidden"
+        onChange={handleFolderSelect}
+      />
+
+      {workspaceMode === 'remote' && (
+        <>
+          {/* Selected Files Summary Card */}
+          {selectedFiles.length > 0 && !uploading && (
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] p-5 rounded-[20px] flex flex-col md:flex-row items-start md:items-center justify-between gap-4 animate-[fadeIn_0.2s_ease-out]">
+              <div>
+                <p className="font-bold text-sm text-[var(--text-main)] flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-success" />
+                  Files Selected
+                </p>
+                <p className="text-xs text-[var(--text-muted)] font-mono mt-0.5">
+                  {selectedFiles.length} files detected (Total: {formatBytes(selectedFiles.reduce((sum, f) => sum + f.size, 0))})
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 w-full md:w-auto">
+                <button
+                  type="button"
+                  onClick={() => { setSelectedFiles([]); setPathInput(''); }}
+                  className="px-4 py-2.5 border border-[var(--border-color)] hover:bg-[var(--bg-secondary)] text-[var(--text-main)] rounded-xl text-sm font-semibold transition-all active:scale-95"
+                >
+                  Clear Selection
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUpload}
+                  className="gradient-btn px-6 py-2.5 rounded-xl font-semibold shadow-md flex items-center gap-2 text-sm active:scale-95 shrink-0"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>Upload & Process</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Uploading progress card */}
+          {uploading && (
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] p-5 rounded-[20px] space-y-3 animate-[fadeIn_0.2s_ease-out]">
+              <div className="flex justify-between items-center text-sm font-semibold">
+                <span className="flex items-center gap-2 text-brand">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  Uploading items...
+                </span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="w-full bg-[var(--border-color)] h-2 rounded-full overflow-hidden">
+                <div 
+                  className="gradient-btn h-full rounded-full transition-all duration-300"
+                  style={{ width: `${uploadProgress}%` }}
+                ></div>
+              </div>
+            </div>
+          )}
+
+          {/* Dropzone / Drag Hint */}
+          <div 
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-[20px] p-8 text-center transition-all duration-300 ${
+              isDragOver 
+                ? 'border-brand bg-brand/5 shadow-[0_0_20px_rgba(139,92,246,0.1)] text-brand' 
+                : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-brand/20'
+            }`}
+          >
+            <UploadCloud className="w-10 h-10 text-brand mx-auto mb-2" />
+            <p className="text-sm font-bold text-[var(--text-main)] mb-1">
+              Drag and Drop folders or files here to select them
+            </p>
+            <p className="text-xs text-[var(--text-muted)]">
+              Or click **Browse** above to open the native folder picker.
+            </p>
+          </div>
+
+          {/* Explanatory Message on Remote Drive Restrictions */}
+          {isRemoteApi && (
+            <div className="flex gap-3.5 bg-brand/5 border border-brand/20 p-5 rounded-[20px] text-xs text-[var(--text-main)] text-left leading-relaxed">
+              <Info className="w-5 h-5 text-brand shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-brand block mb-1">Remote Server Deployment Active</span>
+                Because the ZIP Manager backend is running in the cloud, it cannot access your local drives (C: or D) directly. 
+                Click **Browse** above to choose a folder from your local machine using the browser's native directory picker. Your folder structure will be uploaded securely to your private workspace for processing.
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {/* Recent History */}
       {recentDirectories && recentDirectories.length > 0 && (
         <div className="flex flex-wrap items-center gap-2.5 pt-1">
           <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1">
             <History className="w-3.5 h-3.5" />
-            Recent:
+            Workspace History:
           </span>
           <div className="flex flex-wrap gap-2">
             {recentDirectories.map((dir, idx) => (
@@ -236,7 +482,7 @@ export default function DirectoryPicker({
               </span>
             </div>
 
-            {/* Drives Selection (Windows only) */}
+            {/* Drives Selection */}
             {explorerData.drives && explorerData.drives.length > 0 && (
               <div className="px-6 py-2 border-b border-[var(--border-color)] flex gap-2 overflow-x-auto">
                 {explorerData.drives.map((drive, idx) => (
@@ -310,3 +556,5 @@ export default function DirectoryPicker({
     </div>
   );
 }
+
+
