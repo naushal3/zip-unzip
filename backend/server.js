@@ -309,12 +309,24 @@ app.post('/api/upload', upload.array('files'), (req, res) => {
 
     logMessage(`Successfully uploaded ${req.files.length} items to remote workspace`, 'success', userId);
 
+    let rootFolderName = '';
+    if (req.files && req.files.length > 0) {
+      const firstFile = req.files[0];
+      const cleanPath = restoreRelativePath(firstFile.originalname);
+      const parts = cleanPath.split('/');
+      if (parts.length > 1 && parts[0]) {
+        rootFolderName = parts[0];
+      }
+    }
+
+    const scanPath = rootFolderName ? path.resolve(path.join(workspacePath, rootFolderName)) : workspacePath;
+
     clearItems(userId);
-    const items = scanSelectedDirectory(workspacePath, userId);
-    startWatching(workspacePath, sendSseEvent, userId);
+    const items = scanSelectedDirectory(scanPath, userId);
+    startWatching(scanPath, sendSseEvent, userId);
     sendSseEvent('state', getAppStateAndStats(userId), userId);
 
-    res.json({ success: true, path: workspacePath, items });
+    res.json({ success: true, path: scanPath, items });
   } catch (err) {
     logMessage(`Failed to handle uploaded items: ${err.message}`, 'error', userId);
     res.status(500).json({ error: err.message });
