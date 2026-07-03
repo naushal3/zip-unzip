@@ -1,32 +1,29 @@
 import chokidar from 'chokidar';
 import path from 'path';
 import fs from 'fs';
-import { logMessage, state } from '../store.js';
-import { scanSelectedDirectory, getAppStateAndStats, processQueue } from './zipService.js';
+import { logMessage, getUserState } from '../store.js';
+import { scanSelectedDirectory, getAppStateAndStats, getProcessQueue } from './zipService.js';
 
-let watcher = null;
-let debounceTimeout = null;
+const watchers = {};
+const debounceTimeouts = {};
 
-export function stopWatching() {
-  if (watcher) {
-    watcher.close();
-    watcher = null;
+export function stopWatching(userId = 'default') {
+  if (watchers[userId]) {
+    watchers[userId].close();
+    delete watchers[userId];
   }
 }
 
-export function startWatching(dirPath, sseEmitter) {
-  stopWatching();
+export function startWatching(dirPath, sseEmitter, userId = 'default') {
+  stopWatching(userId);
 
   if (!dirPath || !fs.existsSync(dirPath)) return;
 
   // We set depth: 0 so we only monitor immediate children of the parent folder.
-  // This matches our compression targets (top-level folders inside selected directory).
-  watcher = chokidar.watch(dirPath, {
+  watchers[userId] = chokidar.watch(dirPath, {
     ignored: (filePath) => {
-      // Ignore hidden files and active temp writes or zipped files
       const base = path.basename(filePath);
       if (base.startsWith('.')) return true;
-      // Skip folders inside subfolders if we only want depth 0
       return false;
     },
     persistent: true,
@@ -35,43 +32,44 @@ export function startWatching(dirPath, sseEmitter) {
   });
 
   const triggerRescan = () => {
-    if (debounceTimeout) clearTimeout(debounceTimeout);
-    debounceTimeout = setTimeout(() => {
-      // If we are currently executing batch operations, let the queue update itself.
-      // We only update if the watcher detects an outside file action.
-      if (processQueue.isProcessing) return;
+    if (debounceTimeouts[userId]) clearTimeout(debounceTimeouts[userId]);
+    debounceTimeouts[userId] = setTimeout(() => {
+      const userQueue = getProcessQueue(userId);
+      if (userQueue.isProcessing) return;
 
       try {
-        if (state.currentDirectory === dirPath && fs.existsSync(dirPath)) {
-          scanSelectedDirectory(dirPath);
-          logMessage('Directory listing auto-refreshed.', 'info');
+        const userState = getUserState(userId);
+        if (userState.currentDirectory === dirPath && fs.existsSync(dirPath)) {
+          scanSelectedDirectory(dirPath, userId);
+          logMessage('Directory listing auto-refreshed.', 'info', userId);
           if (sseEmitter) {
-            sseEmitter('state', getAppStateAndStats());
+            sseEmitter('state', getAppStateAndStats(userId), userId);
           }
         }
       } catch (err) {
-        console.error('Watcher rescan failed:', err);
+        console.error(`Watcher rescan failed for user ${userId}:`, err);
       }
     }, 800); // 800ms debounce
   };
 
-  watcher
+  watchers[userId]
     .on('add', (filePath) => {
-      logMessage(`File added: ${path.basename(filePath)}`, 'info');
+      logMessage(`File added: ${path.basename(filePath)}`, 'info', userId);
       triggerRescan();
     })
     .on('addDir', (filePath) => {
-      logMessage(`Folder added: ${path.basename(filePath)}`, 'info');
+      logMessage(`Folder added: ${path.basename(filePath)}`, 'info', userId);
       triggerRescan();
     })
     .on('unlink', (filePath) => {
-      logMessage(`File removed: ${path.basename(filePath)}`, 'info');
+      logMessage(`File removed: ${path.basename(filePath)}`, 'info', userId);
       triggerRescan();
     })
     .on('unlinkDir', (filePath) => {
-      logMessage(`Folder removed: ${path.basename(filePath)}`, 'info');
+      logMessage(`Folder removed: ${path.basename(filePath)}`, 'info', userId);
       triggerRescan();
     });
 
-  logMessage(`Started file watcher on directory: ${dirPath}`, 'info');
+  logMessage(`Started file watcher on directory: ${dirPath}`, 'info', userId);
 }
+

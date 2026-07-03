@@ -4,82 +4,101 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 
-// Default initial state
-const state = {
-  currentDirectory: '',
-  recentDirectories: [],
-  logs: [],
-  settings: {
-    theme: 'dark',
-    concurrencyLimit: 4,
-    overwritePolicy: 'overwrite', // 'overwrite' | 'timestamp' | 'skip'
-    excludedExtensions: ['.tmp', '.log', '.ds_store']
-  },
-  items: {}, // Keyed by item path, tracks status: Waiting | Scanning | Zipping | Extracting | Completed | Failed, progress: 0-100, error: string, etc.
-  operations: {
-    total: 0,
-    processed: 0,
-    success: 0,
-    failed: 0,
-    startTime: null,
-    endTime: null,
-    status: 'idle', // 'idle' | 'processing'
-    speed: 0, // items per second
-    eta: null // estimated remaining seconds
-  }
-};
+// In-memory cache of user-specific states
+export const userStates = {};
 
-// Load settings from disk if they exist
-try {
-  if (fs.existsSync(SETTINGS_FILE)) {
-    const rawData = fs.readFileSync(SETTINGS_FILE, 'utf8');
-    const saved = JSON.parse(rawData);
-    state.settings = { ...state.settings, ...saved.settings };
-    state.recentDirectories = saved.recentDirectories || [];
+// Helper to initialize and retrieve a user's isolated state
+export function getUserState(userId = 'default') {
+  if (!userStates[userId]) {
+    const userSettingsFile = path.join(__dirname, `settings_${userId}.json`);
+    let settings = {
+      theme: 'dark',
+      concurrencyLimit: 4,
+      overwritePolicy: 'overwrite', // 'overwrite' | 'timestamp' | 'skip'
+      excludedExtensions: ['.tmp', '.log', '.ds_store']
+    };
+    let recentDirectories = [];
+
+    // Load user settings if they exist
+    try {
+      if (fs.existsSync(userSettingsFile)) {
+        const rawData = fs.readFileSync(userSettingsFile, 'utf8');
+        const saved = JSON.parse(rawData);
+        settings = { ...settings, ...saved.settings };
+        recentDirectories = saved.recentDirectories || [];
+      }
+    } catch (err) {
+      console.error(`Failed to load settings for user ${userId}:`, err);
+    }
+
+    userStates[userId] = {
+      currentDirectory: '',
+      recentDirectories,
+      logs: [],
+      settings,
+      items: {}, // Keyed by item path
+      operations: {
+        total: 0,
+        processed: 0,
+        success: 0,
+        failed: 0,
+        startTime: null,
+        endTime: null,
+        status: 'idle', // 'idle' | 'processing'
+        speed: 0,
+        eta: null
+      }
+    };
   }
-} catch (err) {
-  console.error('Failed to load settings:', err);
+  return userStates[userId];
 }
 
-// Function to persist settings
-export function saveSettings() {
+// Global fallback state for backward compatibility
+export const state = getUserState('default');
+
+// Function to persist user settings
+export function saveSettings(userId = 'default') {
   try {
+    const userSettingsFile = path.join(__dirname, `settings_${userId}.json`);
+    const userState = getUserState(userId);
     const dataToSave = {
-      settings: state.settings,
-      recentDirectories: state.recentDirectories
+      settings: userState.settings,
+      recentDirectories: userState.recentDirectories
     };
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(dataToSave, null, 2), 'utf8');
+    fs.writeFileSync(userSettingsFile, JSON.stringify(dataToSave, null, 2), 'utf8');
   } catch (err) {
-    console.error('Failed to save settings:', err);
+    console.error(`Failed to save settings for user ${userId}:`, err);
   }
 }
 
 // Log utility
-export function logMessage(message, type = 'info') {
+export function logMessage(message, type = 'info', userId = 'default') {
   const timestamp = new Date().toLocaleTimeString();
   const logEntry = { timestamp, message, type };
-  state.logs.push(logEntry);
-  if (state.logs.length > 500) {
-    state.logs.shift(); // Keep logs buffer manageable
+  const userState = getUserState(userId);
+  userState.logs.push(logEntry);
+  if (userState.logs.length > 500) {
+    userState.logs.shift(); // Keep logs buffer manageable
   }
   return logEntry;
 }
 
-export function addRecentDirectory(dirPath) {
+export function addRecentDirectory(dirPath, userId = 'default') {
   if (!dirPath) return;
-  state.recentDirectories = state.recentDirectories.filter(d => d !== dirPath);
-  state.recentDirectories.unshift(dirPath);
-  if (state.recentDirectories.length > 10) {
-    state.recentDirectories.pop();
+  const userState = getUserState(userId);
+  userState.recentDirectories = userState.recentDirectories.filter(d => d !== dirPath);
+  userState.recentDirectories.unshift(dirPath);
+  if (userState.recentDirectories.length > 10) {
+    userState.recentDirectories.pop();
   }
-  saveSettings();
+  saveSettings(userId);
 }
 
-export function updateItemStatus(itemPath, updates) {
-  if (!state.items[itemPath]) {
-    state.items[itemPath] = {
+export function updateItemStatus(itemPath, updates, userId = 'default') {
+  const userState = getUserState(userId);
+  if (!userState.items[itemPath]) {
+    userState.items[itemPath] = {
       path: itemPath,
       name: path.basename(itemPath),
       status: 'Waiting',
@@ -88,12 +107,13 @@ export function updateItemStatus(itemPath, updates) {
       error: null
     };
   }
-  state.items[itemPath] = { ...state.items[itemPath], ...updates };
+  userState.items[itemPath] = { ...userState.items[itemPath], ...updates };
 }
 
-export function clearItems() {
-  state.items = {};
-  state.operations = {
+export function clearItems(userId = 'default') {
+  const userState = getUserState(userId);
+  userState.items = {};
+  userState.operations = {
     total: 0,
     processed: 0,
     success: 0,
@@ -106,15 +126,15 @@ export function clearItems() {
   };
 }
 
-export function getAppState() {
+export function getAppState(userId = 'default') {
+  const userState = getUserState(userId);
   return {
-    currentDirectory: state.currentDirectory,
-    recentDirectories: state.recentDirectories,
-    settings: state.settings,
-    items: Object.values(state.items),
-    operations: state.operations,
-    logs: state.logs
+    currentDirectory: userState.currentDirectory,
+    recentDirectories: userState.recentDirectories,
+    settings: userState.settings,
+    items: Object.values(userState.items),
+    operations: userState.operations,
+    logs: userState.logs
   };
 }
 
-export { state };

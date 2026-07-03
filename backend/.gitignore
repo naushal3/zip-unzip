@@ -67,3 +67,7 @@ pids/
 .vercel/
 .firebase/
 .render/
+
+# Local workspaces and user settings
+workspace/
+settings_*.json

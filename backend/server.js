@@ -4,11 +4,12 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import archiver from 'archiver';
+import multer from 'multer';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 
 import {
-  state,
+  getUserState,
   logMessage,
   saveSettings,
   clearItems,
@@ -18,7 +19,7 @@ import {
 import {
   scanSelectedDirectory,
   getAppStateAndStats,
-  processQueue,
+  getProcessQueue,
   activeConflicts
 } from './services/zipService.js';
 import {
@@ -38,21 +39,64 @@ app.use(express.json());
 // List of connected SSE clients
 let sseClients = [];
 
-// Helper to send events to all clients
-function sendSseEvent(event, data) {
+// Helper to send events to clients of a specific user
+function sendSseEvent(event, data, userId = 'default') {
   sseClients.forEach(client => {
-    client.write(`event: ${event}\n`);
-    client.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (client.userId === userId) {
+      client.res.write(`event: ${event}\n`);
+      client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
   });
 }
 
-// Connect processQueue to SSE notifications
-processQueue.setSseEmitter(sendSseEvent);
+// Sanitize relative path to prevent directory traversal
+function sanitizeRelativePath(relativePath) {
+  const normalized = relativePath.replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  const cleanParts = parts.filter(part => part && part !== '.' && part !== '..');
+  return cleanParts.join('/');
+}
+
+// Secure boundary checks for paths
+function isPathSecure(targetPath, userId) {
+  if (!targetPath) return true;
+  const resolvedTarget = path.resolve(targetPath);
+  const workspaceRoot = path.resolve(path.join(__dirname, 'workspace'));
+  const userWorkspace = path.resolve(path.join(workspaceRoot, userId));
+  
+  if (resolvedTarget.startsWith(workspaceRoot)) {
+    return resolvedTarget.startsWith(userWorkspace);
+  }
+  
+  // If authenticated user, strictly restrict access to their workspace folder
+  if (userId !== 'default') {
+    return resolvedTarget.startsWith(userWorkspace);
+  }
+  
+  return true; // Local mode allows other drives
+}
+
+// Multer storage engine configuration
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const userId = req.headers['x-user-id'] || 'default';
+    const cleanPath = sanitizeRelativePath(file.originalname);
+    const targetDir = path.join(__dirname, 'workspace', userId, path.dirname(cleanPath));
+    
+    fs.mkdirSync(targetDir, { recursive: true });
+    cb(null, targetDir);
+  },
+  filename: function (req, file, cb) {
+    const cleanPath = sanitizeRelativePath(file.originalname);
+    cb(null, path.basename(cleanPath));
+  }
+});
+
+const upload = multer({ storage: storage });
 
 // Helper to list Windows drives using powershell and fallback to wmic
 function getWindowsDrives() {
   return new Promise((resolve) => {
-    // Try PowerShell first as it is modern and standard
     exec('powershell -Command "[System.IO.DriveInfo]::GetDrives() | Where-Object IsReady | Select-Object -ExpandProperty Name"', (err, stdout) => {
       if (!err && stdout) {
         const drives = stdout
@@ -64,7 +108,6 @@ function getWindowsDrives() {
         }
       }
 
-      // Fallback to wmic
       exec('wmic logicaldisk get name', (err2, stdout2) => {
         if (err2) return resolve(['C:\\']);
         const drives = stdout2
@@ -78,10 +121,18 @@ function getWindowsDrives() {
   });
 }
 
+// Ensure workspace directory exists
+const globalWorkspaceDir = path.join(__dirname, 'workspace');
+if (!fs.existsSync(globalWorkspaceDir)) {
+  fs.mkdirSync(globalWorkspaceDir, { recursive: true });
+}
+
 // REST APIs
 
 // SSE event stream
 app.get('/api/events', (req, res) => {
+  const userId = req.query.userId || 'default';
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -89,12 +140,13 @@ app.get('/api/events', (req, res) => {
     'X-Accel-Buffering': 'no'
   });
 
-  // Send initial state immediately
   res.write(`event: state\n`);
-  res.write(`data: ${JSON.stringify(getAppStateAndStats())}\n\n`);
+  res.write(`data: ${JSON.stringify(getAppStateAndStats(userId))}\n\n`);
 
-  const client = res;
+  const client = { res, userId };
   sseClients.push(client);
+
+  getProcessQueue(userId).setSseEmitter(sendSseEvent);
 
   req.on('close', () => {
     sseClients = sseClients.filter(c => c !== client);
@@ -103,61 +155,87 @@ app.get('/api/events', (req, res) => {
 
 // Get current state
 app.get('/api/status', (req, res) => {
-  res.json(getAppStateAndStats());
+  const userId = req.headers['x-user-id'] || 'default';
+  res.json(getAppStateAndStats(userId));
 });
 
 // Select and scan directory
 app.post('/api/select-dir', (req, res) => {
-  const { path: dirPath } = req.body;
+  const userId = req.headers['x-user-id'] || 'default';
+  let { path: dirPath } = req.body;
   if (!dirPath) {
     return res.status(400).json({ error: 'Path is required' });
   }
 
+  // Prepend user workspace prefix if in multi-tenant mode and path is relative
+  if (userId !== 'default' && !path.isAbsolute(dirPath)) {
+    dirPath = path.join(__dirname, 'workspace', userId, dirPath);
+  }
+
+  if (!isPathSecure(dirPath, userId)) {
+    return res.status(403).json({ error: 'Access Denied: Path is outside your secure workspace' });
+  }
+
   try {
     const resolvedPath = path.resolve(dirPath);
-    clearItems();
-    const items = scanSelectedDirectory(resolvedPath);
+    clearItems(userId);
+    const items = scanSelectedDirectory(resolvedPath, userId);
 
-    // Start watching this folder
-    startWatching(resolvedPath, sendSseEvent);
-
-    // Notify clients of the updated state
-    sendSseEvent('state', getAppStateAndStats());
+    startWatching(resolvedPath, sendSseEvent, userId);
+    sendSseEvent('state', getAppStateAndStats(userId), userId);
 
     res.json({ success: true, path: resolvedPath, items });
   } catch (err) {
-    logMessage(`Failed to select directory ${dirPath}: ${err.message}`, 'error');
+    logMessage(`Failed to select directory ${dirPath}: ${err.message}`, 'error', userId);
     res.status(500).json({ error: err.message });
   }
 });
 
 // Scan current directory
 app.post('/api/scan', (req, res) => {
-  if (!state.currentDirectory) {
+  const userId = req.headers['x-user-id'] || 'default';
+  const userState = getUserState(userId);
+  if (!userState.currentDirectory) {
     return res.status(400).json({ error: 'No directory selected' });
   }
+
+  if (!isPathSecure(userState.currentDirectory, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
   try {
-    const items = scanSelectedDirectory(state.currentDirectory);
-    sendSseEvent('state', getAppStateAndStats());
+    const items = scanSelectedDirectory(userState.currentDirectory, userId);
+    sendSseEvent('state', getAppStateAndStats(userId), userId);
     res.json({ success: true, items });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Browse server directory structure (for folder explorer modal)
+// Browse server directory structure
 app.get('/api/browse', async (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
   let targetPath = req.query.path;
   const isWindows = process.platform === 'win32';
 
   if (!targetPath) {
-    targetPath = os.homedir();
+    if (userId !== 'default') {
+      targetPath = path.join(__dirname, 'workspace', userId);
+      fs.mkdirSync(targetPath, { recursive: true });
+    } else {
+      targetPath = os.homedir();
+    }
+  } else if (userId !== 'default' && !path.isAbsolute(targetPath)) {
+    targetPath = path.join(__dirname, 'workspace', userId, targetPath);
+  }
+
+  if (!isPathSecure(targetPath, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
   }
 
   try {
     const resolvedPath = path.resolve(targetPath);
 
-    // Check path exists and is a folder
     if (!fs.existsSync(resolvedPath)) {
       return res.status(404).json({ error: 'Path not found' });
     }
@@ -171,7 +249,6 @@ app.get('/api/browse', async (req, res) => {
     const directories = [];
 
     for (const file of files) {
-      // Skip system or dot files
       if (file.startsWith('$') || file.startsWith('.')) continue;
       try {
         const fullPath = path.join(resolvedPath, file);
@@ -183,21 +260,21 @@ app.get('/api/browse', async (req, res) => {
           });
         }
       } catch (err) {
-        // Skip inaccessible files/folders (permission errors)
+        // Skip inaccessible files/folders
       }
     }
 
     let drives = [];
-    if (isWindows) {
+    if (isWindows && userId === 'default') {
       drives = await getWindowsDrives();
     }
 
-    // Determine parent path
     const parentPath = path.dirname(resolvedPath);
+    const isAtRoot = parentPath === resolvedPath || (userId !== 'default' && resolvedPath === path.resolve(path.join(__dirname, 'workspace', userId)));
 
     res.json({
       currentPath: resolvedPath,
-      parentPath: parentPath === resolvedPath ? null : parentPath,
+      parentPath: isAtRoot ? null : parentPath,
       directories: directories.sort((a, b) => a.name.localeCompare(b.name)),
       drives
     });
@@ -206,9 +283,34 @@ app.get('/api/browse', async (req, res) => {
   }
 });
 
-// Trigger batch actions (compress folders / extract archives)
+// Upload endpoint for folders and files
+app.post('/api/upload', upload.array('files'), (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
+  const workspacePath = path.resolve(path.join(__dirname, 'workspace', userId));
+  
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files were uploaded' });
+    }
+
+    logMessage(`Successfully uploaded ${req.files.length} items to remote workspace`, 'success', userId);
+
+    clearItems(userId);
+    const items = scanSelectedDirectory(workspacePath, userId);
+    startWatching(workspacePath, sendSseEvent, userId);
+    sendSseEvent('state', getAppStateAndStats(userId), userId);
+
+    res.json({ success: true, path: workspacePath, items });
+  } catch (err) {
+    logMessage(`Failed to handle uploaded items: ${err.message}`, 'error', userId);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Trigger batch actions
 app.post('/api/process', (req, res) => {
-  const { items, action } = req.body; // items: array of itemPaths, action: 'zip' | 'extract' | 'auto'
+  const userId = req.headers['x-user-id'] || 'default';
+  const { items, action } = req.body;
   if (!items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'Items array is required' });
   }
@@ -216,10 +318,19 @@ app.post('/api/process', (req, res) => {
     return res.status(400).json({ error: 'Action must be "zip", "extract", or "auto"' });
   }
 
+  for (const itemPath of items) {
+    if (!isPathSecure(itemPath, userId)) {
+      return res.status(403).json({ error: 'Access Denied: Path outside workspace boundary' });
+    }
+  }
+
+  const userQueue = getProcessQueue(userId);
+  const userState = getUserState(userId);
+
   items.forEach(itemPath => {
     let taskAction = action;
     if (action === 'auto') {
-      const item = state.items[itemPath];
+      const item = userState.items[itemPath];
       if (item) {
         taskAction = item.type === 'folder' ? 'zip' : 'extract';
       } else {
@@ -231,21 +342,26 @@ app.post('/api/process', (req, res) => {
         }
       }
     }
-    processQueue.add(itemPath, taskAction);
+    userQueue.add(itemPath, taskAction);
   });
 
-  processQueue.start();
+  userQueue.start();
   res.json({ success: true, message: 'Processing started' });
 });
 
-// Resolve conflicts (overwrite, timestamp, skip)
+// Resolve conflicts
 app.post('/api/resolve-conflict', (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
   const { itemPath, decision } = req.body;
   if (!itemPath || !decision) {
     return res.status(400).json({ error: 'itemPath and decision are required' });
   }
+  if (!isPathSecure(itemPath, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
 
-  const conflict = activeConflicts.get(itemPath);
+  const conflictKey = `${userId}:${itemPath}`;
+  const conflict = activeConflicts.get(conflictKey);
   if (!conflict) {
     return res.status(404).json({ error: 'No pending conflict for this path' });
   }
@@ -256,15 +372,22 @@ app.post('/api/resolve-conflict', (req, res) => {
 
 // Cancel queue
 app.post('/api/cancel', (req, res) => {
-  processQueue.stop();
+  const userId = req.headers['x-user-id'] || 'default';
+  const userQueue = getProcessQueue(userId);
+  userQueue.stop();
   res.json({ success: true, message: 'Processing queue cancelled' });
 });
 
 // Download single ZIP
 app.get('/api/download', (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
   const { file: filePath } = req.query;
   if (!filePath) {
     return res.status(400).json({ error: 'File path is required' });
+  }
+
+  if (!isPathSecure(filePath, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
   }
 
   const resolved = path.resolve(filePath);
@@ -285,12 +408,18 @@ app.get('/api/download', (req, res) => {
 
 // Download all zip files as a single combined zip stream
 app.get('/api/download-all', (req, res) => {
-  if (!state.currentDirectory) {
+  const userId = req.headers['x-user-id'] || 'default';
+  const userState = getUserState(userId);
+  if (!userState.currentDirectory) {
     return res.status(400).json({ error: 'No directory selected' });
   }
 
+  if (!isPathSecure(userState.currentDirectory, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
   try {
-    const parentDir = state.currentDirectory;
+    const parentDir = userState.currentDirectory;
     const files = fs.readdirSync(parentDir);
     const zips = files
       .map(file => path.join(parentDir, file))
@@ -328,16 +457,23 @@ app.get('/api/download-all', (req, res) => {
 
 // Clear system activity logs
 app.post('/api/clear-logs', (req, res) => {
-  state.logs = [];
-  sendSseEvent('state', getAppStateAndStats());
+  const userId = req.headers['x-user-id'] || 'default';
+  const userState = getUserState(userId);
+  userState.logs = [];
+  sendSseEvent('state', getAppStateAndStats(userId), userId);
   res.json({ success: true });
 });
 
 // Delete file or folder from disk
 app.post('/api/delete', (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
   const { path: itemPath } = req.body;
   if (!itemPath) {
     return res.status(400).json({ error: 'Path is required' });
+  }
+
+  if (!isPathSecure(itemPath, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
   }
 
   try {
@@ -353,44 +489,52 @@ app.post('/api/delete', (req, res) => {
       fs.unlinkSync(resolvedPath);
     }
 
-    logMessage(`Deleted ${path.basename(resolvedPath)} from disk`, 'warning');
+    logMessage(`Deleted ${path.basename(resolvedPath)} from disk`, 'warning', userId);
 
-    // Rescan and update clients
-    scanSelectedDirectory(state.currentDirectory);
-    sendSseEvent('state', getAppStateAndStats());
+    const userState = getUserState(userId);
+    scanSelectedDirectory(userState.currentDirectory, userId);
+    sendSseEvent('state', getAppStateAndStats(userId), userId);
 
     res.json({ success: true });
   } catch (err) {
-    logMessage(`Failed to delete ${itemPath}: ${err.message}`, 'error');
+    logMessage(`Failed to delete ${itemPath}: ${err.message}`, 'error', userId);
     res.status(500).json({ error: err.message });
   }
 });
 
 // Get/Set settings
 app.get('/api/settings', (req, res) => {
-  res.json(state.settings);
+  const userId = req.headers['x-user-id'] || 'default';
+  const userState = getUserState(userId);
+  res.json(userState.settings);
 });
 
 app.post('/api/settings', (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
+  const userState = getUserState(userId);
   const { theme, concurrencyLimit, overwritePolicy, excludedExtensions } = req.body;
 
-  if (theme !== undefined) state.settings.theme = theme;
-  if (concurrencyLimit !== undefined) state.settings.concurrencyLimit = parseInt(concurrencyLimit, 10);
-  if (overwritePolicy !== undefined) state.settings.overwritePolicy = overwritePolicy;
-  if (excludedExtensions !== undefined) state.settings.excludedExtensions = excludedExtensions;
+  if (theme !== undefined) userState.settings.theme = theme;
+  if (concurrencyLimit !== undefined) userState.settings.concurrencyLimit = parseInt(concurrencyLimit, 10);
+  if (overwritePolicy !== undefined) userState.settings.overwritePolicy = overwritePolicy;
+  if (excludedExtensions !== undefined) userState.settings.excludedExtensions = excludedExtensions;
 
-  saveSettings();
-  sendSseEvent('state', getAppStateAndStats());
-  res.json({ success: true, settings: state.settings });
+  saveSettings(userId);
+  sendSseEvent('state', getAppStateAndStats(userId), userId);
+  res.json({ success: true, settings: userState.settings });
 });
 
 // Open native OS folder picker dialog
 app.post('/api/select-dir-dialog', (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
+  if (userId !== 'default') {
+    return res.status(400).json({ error: 'Native OS dialog is not supported in remote cloud environments' });
+  }
+
   const isWindows = process.platform === 'win32';
   const isMac = process.platform === 'darwin';
 
   if (isWindows) {
-    // PowerShell script to open FolderBrowserDialog
     const psCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select Working Directory for ZIP Manager'; if ($f.ShowDialog() -eq 'OK') { Write-Host $f.SelectedPath }"`;
 
     exec(psCommand, (err, stdout, stderr) => {
@@ -402,7 +546,6 @@ app.post('/api/select-dir-dialog', (req, res) => {
       res.json({ success: true, path: selectedPath });
     });
   } else if (isMac) {
-    // macOS AppleScript to open folder picker
     const osascriptCommand = `osascript -e 'POSIX path of (choose folder with prompt "Select Working Directory for ZIP Manager")'`;
     exec(osascriptCommand, (err, stdout, stderr) => {
       if (err) return res.status(500).json({ error: `Failed to open dialog: ${err.message}` });
@@ -411,7 +554,6 @@ app.post('/api/select-dir-dialog', (req, res) => {
       res.json({ success: true, path: selectedPath });
     });
   } else {
-    // Linux Zenity fallback
     exec('zenity --file-selection --directory', (err, stdout, stderr) => {
       if (err) return res.status(500).json({ error: 'Native folder dialog is not supported or zenity is missing' });
       const selectedPath = stdout.trim();
@@ -424,10 +566,12 @@ app.post('/api/select-dir-dialog', (req, res) => {
 // Start listening
 const server = app.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
-  logMessage(`Server listening on port ${PORT}`, 'info');
+  logMessage(`Server listening on port ${PORT}`, 'info', 'default');
 });
 
 process.on('SIGTERM', () => {
-  stopWatching();
+  // Stop watching all user workspaces
+  Object.keys(userStates).forEach(uid => stopWatching(uid));
   server.close();
 });
+
