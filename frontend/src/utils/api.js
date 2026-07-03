@@ -1,14 +1,14 @@
-const isLocalhost = typeof window !== 'undefined' && 
+const isLocalhost = typeof window !== 'undefined' &&
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
 export const getApiBase = () => {
   const stored = localStorage.getItem('ZIP_MANAGER_API_BASE');
   if (stored) return stored;
-  
+
   if (isLocalhost) {
     return '/api';
   }
-  return 'http://localhost:5000/api';
+  return 'https://zip-unzip-1.onrender.com/api';
 };
 
 export async function fetchStatus() {
