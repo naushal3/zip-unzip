@@ -192,58 +192,35 @@ export function zipFolder(folderPath, outputPath, onProgress, userId = 'default'
 
 // Unzip single file
 export async function unzipFile(zipPath, outputPath, onProgress, userId = 'default') {
+  logMessage(`[UNZIP] Found ZIP file: ${path.basename(zipPath)}`, 'info', userId);
+  logMessage(`[UNZIP] Extracting to directory: ${outputPath}`, 'info', userId);
+
   const zip = new AdmZip(zipPath);
   const zipEntries = zip.getEntries();
   const total = zipEntries.length;
   if (total === 0) {
     onProgress(100);
+    logMessage(`[UNZIP] ZIP file is empty: ${path.basename(zipPath)}`, 'warning', userId);
     return;
-  }
-
-  // Get all zip entry names/relative paths
-  const zipPaths = new Set();
-  zipEntries.forEach(entry => {
-    const entryPath = entry.entryName.replace(/\\/g, '/');
-    zipPaths.add(entryPath);
-    let parts = entryPath.split('/');
-    if (parts.length > 1) {
-      for (let i = 1; i < parts.length; i++) {
-        zipPaths.add(parts.slice(0, i).join('/') + '/');
-      }
-    }
-  });
-
-  if (fs.existsSync(outputPath)) {
-    const removeExtraneous = (currentDir) => {
-      try {
-        const files = fs.readdirSync(currentDir);
-        for (const file of files) {
-          const fullPath = path.join(currentDir, file);
-          const relativePath = path.relative(outputPath, fullPath).replace(/\\/g, '/');
-          
-          const isDir = fs.statSync(fullPath).isDirectory();
-          const matchPath = isDir ? `${relativePath}/` : relativePath;
-
-          if (!zipPaths.has(matchPath)) {
-            fs.rmSync(fullPath, { recursive: true, force: true });
-            logMessage(`Cleaned up outdated item: ${relativePath}`, 'info', userId);
-          } else if (isDir) {
-            removeExtraneous(fullPath);
-          }
-        }
-      } catch (err) {
-        // Ignore errors
-      }
-    };
-    
-    removeExtraneous(outputPath);
   }
 
   fs.mkdirSync(outputPath, { recursive: true });
 
   for (let i = 0; i < total; i++) {
     const entry = zipEntries[i];
-    zip.extractEntryTo(entry, outputPath, true, true);
+    try {
+      if (entry.isDirectory) {
+        fs.mkdirSync(path.join(outputPath, entry.entryName), { recursive: true });
+      } else {
+        const targetFilePath = path.join(outputPath, entry.entryName);
+        fs.mkdirSync(path.dirname(targetFilePath), { recursive: true });
+        zip.extractEntryTo(entry, outputPath, true, true);
+      }
+    } catch (err) {
+      console.error(`Failed to extract entry ${entry.entryName} from ${path.basename(zipPath)}:`, err);
+      throw new Error(`Failed to extract ${entry.entryName}: ${err.message}`);
+    }
+
     const percent = Math.round(((i + 1) / total) * 100);
     onProgress(percent);
 
@@ -251,6 +228,8 @@ export async function unzipFile(zipPath, outputPath, onProgress, userId = 'defau
       await new Promise(res => setImmediate(res));
     }
   }
+
+  logMessage(`[UNZIP] Extraction completed successfully for: ${path.basename(zipPath)}`, 'success', userId);
 }
 
 // Queue system for processing multiple items
@@ -464,6 +443,11 @@ class ProcessQueue {
         logMessage(`[UNZIP] Destination folder exists for ${item.name}. Output folder renamed to ${newDirName}`, 'warning', this.userId);
       } else if (decision === 'overwrite') {
         logMessage(`[UNZIP] Destination folder exists for ${item.name}. Overwriting existing contents.`, 'info', this.userId);
+        try {
+          fs.rmSync(targetDestPath, { recursive: true, force: true });
+        } catch (err) {
+          console.error(`Failed to remove old folder ${targetDestPath}:`, err);
+        }
       }
     }
 

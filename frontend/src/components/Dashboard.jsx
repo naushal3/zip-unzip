@@ -203,9 +203,10 @@ export default function Dashboard() {
   };
 
   const handleProcessBatch = async (paths, action) => {
+    const pathsArray = Array.isArray(paths) ? paths : [paths];
     try {
-      await processItems(paths, action);
-      toast.success(`Started processing ${paths.length} items`);
+      await processItems(pathsArray, action);
+      toast.success(`Started processing ${pathsArray.length} items`);
     } catch (err) {
       toast.error('Failed to start processing: ' + err.message);
     }
