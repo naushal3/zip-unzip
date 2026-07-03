@@ -56,18 +56,16 @@ export function scanSelectedDirectory(dirPath, userId = 'default') {
       const isDir = fstat.isDirectory();
       const isZip = !isDir && file.toLowerCase().endsWith('.zip');
 
-      if (isDir || isZip) {
-        items[fullPath] = {
-          path: fullPath,
-          name: file,
-          type: isDir ? 'folder' : 'zip',
-          status: 'Waiting',
-          progress: 0,
-          size: fstat.size,
-          mtime: fstat.mtime,
-          error: null
-        };
-      }
+      items[fullPath] = {
+        path: fullPath,
+        name: file,
+        type: isDir ? 'folder' : (isZip ? 'zip' : 'file'),
+        status: 'Waiting',
+        progress: 0,
+        size: fstat.size,
+        mtime: fstat.mtime,
+        error: null
+      };
     } catch (e) {
       console.error(`Error reading file stats for ${file}:`, e);
     }
@@ -171,13 +169,19 @@ export function zipFolder(folderPath, outputPath, onProgress, userId = 'default'
 
       archive.pipe(output);
 
-      // Append directory with file filter
-      archive.directory(folderPath, false, (entry) => {
-        if (isExcluded(entry.name, userId)) {
-          return false; // Skip this file
-        }
-        return entry;
-      });
+      const folderStat = fs.statSync(folderPath);
+      if (folderStat.isDirectory()) {
+        // Append directory with file filter
+        archive.directory(folderPath, false, (entry) => {
+          if (isExcluded(entry.name, userId)) {
+            return false; // Skip this file
+          }
+          return entry;
+        });
+      } else {
+        // Append single file
+        archive.file(folderPath, { name: path.basename(folderPath) });
+      }
 
       archive.finalize();
     } catch (err) {

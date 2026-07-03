@@ -260,9 +260,9 @@ export default function FileList({
                       <div className="flex items-center justify-end gap-1.5">
                         {/* Process Single Action (Zip or Unzip) */}
                         <button
-                          onClick={() => onProcessSingle(item.path, item.type === 'folder' ? 'zip' : 'extract')}
+                          onClick={() => onProcessSingle(item.path, item.type === 'zip' ? 'extract' : 'zip')}
                           disabled={isProcessing}
-                          title={item.type === 'folder' ? 'Zip folder' : 'Extract archive'}
+                          title={item.type === 'zip' ? 'Extract archive' : 'Zip item'}
                           className="p-2 text-[var(--text-muted)] hover:text-brand hover:bg-[var(--bg-secondary)] rounded-xl transition-all disabled:opacity-30 active:scale-95"
                         >
                           <Play className="w-4 h-4" />

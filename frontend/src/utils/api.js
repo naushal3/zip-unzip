@@ -159,7 +159,7 @@ export function uploadFiles(filesList, onProgress) {
     for (let i = 0; i < filesList.length; i++) {
       const file = filesList[i];
       const uploadPath = file.webkitRelativePath || file.name;
-      const safeUploadPath = uploadPath.replace(/\//g, '____');
+      const safeUploadPath = uploadPath.replace(/[\\/]/g, '____');
       formData.append('files', file, safeUploadPath);
     }
 
