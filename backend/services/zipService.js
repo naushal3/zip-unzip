@@ -334,7 +334,8 @@ class ProcessQueue {
 
   async executeTask(task) {
     const userState = getUserState(this.userId);
-    const item = userState.items[task.path];
+    const resolvedPath = path.resolve(task.path);
+    const item = userState.items[task.path] || userState.items[resolvedPath] || Object.values(userState.items).find(i => path.resolve(i.path) === resolvedPath);
     if (!item) {
       this.taskFinished(task, false, 'Item not found in state');
       return;

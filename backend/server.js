@@ -20,7 +20,9 @@ import {
   scanSelectedDirectory,
   getAppStateAndStats,
   getProcessQueue,
-  activeConflicts
+  activeConflicts,
+  zipFolder,
+  unzipFile
 } from './services/zipService.js';
 import {
   startWatching,
@@ -347,6 +349,54 @@ app.post('/api/process', (req, res) => {
 
   userQueue.start();
   res.json({ success: true, message: 'Processing started' });
+});
+
+// Direct zip endpoint
+app.post('/api/zip', async (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
+  const { path: folderPath } = req.body;
+  if (!folderPath) {
+    return res.status(400).json({ error: 'path is required' });
+  }
+  if (!isPathSecure(folderPath, userId)) {
+    return res.status(403).json({ error: 'Access Denied: Path outside workspace boundary' });
+  }
+  try {
+    const baseName = path.basename(folderPath);
+    const parentDir = path.dirname(folderPath);
+    const targetZipPath = path.join(parentDir, `${baseName}.zip`);
+    
+    await zipFolder(folderPath, targetZipPath, () => {}, userId);
+    scanSelectedDirectory(parentDir, userId);
+    sendSseEvent('state', getAppStateAndStats(userId), userId);
+    res.json({ success: true, message: 'Folder zipped successfully', archivePath: targetZipPath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Direct unzip endpoint
+app.post('/api/unzip', async (req, res) => {
+  const userId = req.headers['x-user-id'] || 'default';
+  const { path: zipPath } = req.body;
+  if (!zipPath) {
+    return res.status(400).json({ error: 'path is required' });
+  }
+  if (!isPathSecure(zipPath, userId)) {
+    return res.status(403).json({ error: 'Access Denied: Path outside workspace boundary' });
+  }
+  try {
+    const baseName = path.basename(zipPath, '.zip');
+    const parentDir = path.dirname(zipPath);
+    const targetDestPath = path.join(parentDir, baseName);
+    
+    await unzipFile(zipPath, targetDestPath, () => {}, userId);
+    scanSelectedDirectory(parentDir, userId);
+    sendSseEvent('state', getAppStateAndStats(userId), userId);
+    res.json({ success: true, message: 'Archive extracted successfully', destPath: targetDestPath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Resolve conflicts
