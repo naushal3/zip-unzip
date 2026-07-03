@@ -442,7 +442,7 @@ app.post('/api/cancel', (req, res) => {
 
 // Download single ZIP
 app.get('/api/download', (req, res) => {
-  const userId = req.headers['x-user-id'] || 'default';
+  const userId = req.headers['x-user-id'] || req.query.userId || 'default';
   const { file: filePath } = req.query;
   if (!filePath) {
     return res.status(400).json({ error: 'File path is required' });
@@ -470,18 +470,19 @@ app.get('/api/download', (req, res) => {
 
 // Download all zip files as a single combined zip stream
 app.get('/api/download-all', (req, res) => {
-  const userId = req.headers['x-user-id'] || 'default';
+  const userId = req.headers['x-user-id'] || req.query.userId || 'default';
   const userState = getUserState(userId);
-  if (!userState.currentDirectory) {
+  const parentDir = req.query.directory || userState.currentDirectory;
+
+  if (!parentDir) {
     return res.status(400).json({ error: 'No directory selected' });
   }
 
-  if (!isPathSecure(userState.currentDirectory, userId)) {
+  if (!isPathSecure(parentDir, userId)) {
     return res.status(403).json({ error: 'Access Denied' });
   }
 
   try {
-    const parentDir = userState.currentDirectory;
     const files = fs.readdirSync(parentDir);
     const zips = files
       .map(file => path.join(parentDir, file))

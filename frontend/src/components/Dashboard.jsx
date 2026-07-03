@@ -359,6 +359,7 @@ export default function Dashboard() {
           onRefresh={handleRefresh}
           onOpenSettings={() => setShowSettings(true)}
           onClearSelection={() => setSelectedItems([])}
+          currentDirectory={appState.currentDirectory}
         />
       )}
 

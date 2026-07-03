@@ -19,8 +19,11 @@ export default function ControlPanel({
   onCancelQueue,
   onRefresh,
   onOpenSettings,
-  onClearSelection
+  onClearSelection,
+  currentDirectory
 }) {
+  console.log("Current Directory:", currentDirectory);
+
   const isProcessing = operations.status === 'processing';
   const hasSelection = selectedItems.length > 0;
 
@@ -136,7 +139,7 @@ export default function ControlPanel({
               {/* Combined Download */}
               {zipsInList.length > 0 && (
                 <a
-                  href={getDownloadAllUrl()}
+                  href={getDownloadAllUrl(currentDirectory)}
                   className="px-4 py-2 bg-success/15 hover:bg-success/25 border border-success/30 text-success rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm"
                   title="Download all ZIP files in this folder combined as a single ZIP archive"
                 >

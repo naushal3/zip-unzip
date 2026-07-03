@@ -137,8 +137,9 @@ export function getDownloadUrl(filePath) {
   return `${getApiBase()}/download?file=${encodeURIComponent(filePath)}&userId=${auth.currentUser?.uid || 'default'}`;
 }
 
-export function getDownloadAllUrl() {
-  return `${getApiBase()}/download-all?userId=${auth.currentUser?.uid || 'default'}`;
+export function getDownloadAllUrl(currentDirectory = '') {
+  const dirQuery = currentDirectory ? `&directory=${encodeURIComponent(currentDirectory)}` : '';
+  return `${getApiBase()}/download-all?userId=${auth.currentUser?.uid || 'default'}${dirQuery}`;
 }
 
 export async function openNativeDirectoryDialog() {
