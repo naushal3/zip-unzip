@@ -346,11 +346,11 @@ app.post('/api/process', (req, res) => {
     if (action === 'auto') {
       const item = userState.items[itemPath];
       if (item) {
-        taskAction = item.type === 'folder' ? 'zip' : 'extract';
+        taskAction = (item.type === 'folder' || item.type === 'file') ? 'zip' : 'extract';
       } else {
         try {
           const stat = fs.statSync(itemPath);
-          taskAction = stat.isDirectory() ? 'zip' : 'extract';
+          taskAction = (stat.isDirectory() || !itemPath.toLowerCase().endsWith('.zip')) ? 'zip' : 'extract';
         } catch (e) {
           taskAction = itemPath.toLowerCase().endsWith('.zip') ? 'extract' : 'zip';
         }
