@@ -33,6 +33,7 @@ function getYYYYMMDD_HHMM(date) {
 }
 
 // Scan directory
+// Scan directory
 export function scanSelectedDirectory(dirPath, userId = 'default') {
   if (!dirPath || !fs.existsSync(dirPath)) {
     throw new Error('Directory path does not exist');
@@ -80,6 +81,15 @@ export function scanSelectedDirectory(dirPath, userId = 'default') {
 
         const isZip = !isDir && file.toLowerCase().endsWith('.zip');
         const relativeName = path.relative(normDirPath, fullPath).replace(/\\/g, '/');
+
+        // Only display direct children (depth 0) OR ZIP files found at any depth
+        const isDirectChild = normalizePath(path.dirname(fullPath)) === normDirPath;
+        if (!isDirectChild && !isZip) {
+          if (isDir) {
+            traverse(fullPath);
+          }
+          return;
+        }
 
         const existing = existingItems[fullPath];
 
