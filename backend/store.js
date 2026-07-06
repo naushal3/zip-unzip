@@ -5,6 +5,16 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Helper to sanitize and normalize paths
+export function normalizePath(p) {
+  if (!p) return '';
+  let resolved = path.resolve(p);
+  if (process.platform === 'win32' && /^[a-zA-Z]:/.test(resolved)) {
+    resolved = resolved[0].toUpperCase() + resolved.slice(1);
+  }
+  return path.normalize(resolved);
+}
+
 // In-memory cache of user-specific states
 export const userStates = {};
 
@@ -86,9 +96,10 @@ export function logMessage(message, type = 'info', userId = 'default') {
 
 export function addRecentDirectory(dirPath, userId = 'default') {
   if (!dirPath) return;
+  const normPath = normalizePath(dirPath);
   const userState = getUserState(userId);
-  userState.recentDirectories = userState.recentDirectories.filter(d => d !== dirPath);
-  userState.recentDirectories.unshift(dirPath);
+  userState.recentDirectories = userState.recentDirectories.filter(d => normalizePath(d) !== normPath);
+  userState.recentDirectories.unshift(normPath);
   if (userState.recentDirectories.length > 10) {
     userState.recentDirectories.pop();
   }
@@ -97,17 +108,18 @@ export function addRecentDirectory(dirPath, userId = 'default') {
 
 export function updateItemStatus(itemPath, updates, userId = 'default') {
   const userState = getUserState(userId);
-  if (!userState.items[itemPath]) {
-    userState.items[itemPath] = {
-      path: itemPath,
-      name: path.basename(itemPath),
+  const normPath = normalizePath(itemPath);
+  if (!userState.items[normPath]) {
+    userState.items[normPath] = {
+      path: normPath,
+      name: path.basename(normPath),
       status: 'Waiting',
       progress: 0,
       size: 0,
       error: null
     };
   }
-  userState.items[itemPath] = { ...userState.items[itemPath], ...updates };
+  userState.items[normPath] = { ...userState.items[normPath], ...updates };
 }
 
 export function clearItems(userId = 'default') {

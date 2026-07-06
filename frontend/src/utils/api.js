@@ -142,6 +142,11 @@ export function getDownloadAllUrl(currentDirectory = '') {
   return `${getApiBase()}/download-all?userId=${auth.currentUser?.uid || 'default'}${dirQuery}`;
 }
 
+export function getDownloadUnzippedUrl(currentDirectory = '') {
+  const dirQuery = currentDirectory ? `&directory=${encodeURIComponent(currentDirectory)}` : '';
+  return `${getApiBase()}/download-unzipped?userId=${auth.currentUser?.uid || 'default'}${dirQuery}`;
+}
+
 export async function openNativeDirectoryDialog() {
   const res = await fetch(`${getApiBase()}/select-dir-dialog`, {
     method: 'POST',

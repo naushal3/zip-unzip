@@ -6,7 +6,8 @@ import {
   getUserState, 
   logMessage, 
   updateItemStatus, 
-  addRecentDirectory 
+  addRecentDirectory,
+  normalizePath
 } from '../store.js';
 
 // Holds active conflicts requiring user confirmation
@@ -42,37 +43,70 @@ export function scanSelectedDirectory(dirPath, userId = 'default') {
     throw new Error('Path is not a directory');
   }
 
+  const normDirPath = normalizePath(dirPath);
   const userState = getUserState(userId);
-  userState.currentDirectory = dirPath;
-  addRecentDirectory(dirPath, userId);
+  userState.currentDirectory = normDirPath;
+  addRecentDirectory(normDirPath, userId);
 
-  const files = fs.readdirSync(dirPath);
   const items = {};
+  const existingItems = userState.items || {};
 
-  files.forEach(file => {
-    const fullPath = path.join(dirPath, file);
+  function traverse(currentDir) {
+    let files;
     try {
-      const fstat = fs.statSync(fullPath);
-      const isDir = fstat.isDirectory();
-      const isZip = !isDir && file.toLowerCase().endsWith('.zip');
-
-      items[fullPath] = {
-        path: fullPath,
-        name: file,
-        type: isDir ? 'folder' : (isZip ? 'zip' : 'file'),
-        status: 'Waiting',
-        progress: 0,
-        size: fstat.size,
-        mtime: fstat.mtime,
-        error: null
-      };
-    } catch (e) {
-      console.error(`Error reading file stats for ${file}:`, e);
+      files = fs.readdirSync(currentDir);
+    } catch (err) {
+      console.error(`Failed to read directory ${currentDir}:`, err);
+      return;
     }
-  });
+
+    files.forEach(file => {
+      if (file.startsWith('.')) return; // Skip hidden files/folders
+
+      const fullPath = normalizePath(path.join(currentDir, file));
+      try {
+        const fstat = fs.statSync(fullPath);
+        const isDir = fstat.isDirectory();
+
+        // Skip dependency/metadata directories
+        if (isDir && ['node_modules', '.git', '.firebase', '.cache'].includes(file)) {
+          return;
+        }
+
+        // Apply exclusion filters for files
+        if (!isDir && isExcluded(file, userId)) {
+          return;
+        }
+
+        const isZip = !isDir && file.toLowerCase().endsWith('.zip');
+        const relativeName = path.relative(normDirPath, fullPath).replace(/\\/g, '/');
+
+        const existing = existingItems[fullPath];
+
+        items[fullPath] = {
+          path: fullPath,
+          name: relativeName,
+          type: isDir ? 'folder' : (isZip ? 'zip' : 'file'),
+          status: existing ? existing.status : 'Waiting',
+          progress: existing ? existing.progress : 0,
+          size: fstat.size,
+          mtime: fstat.mtime,
+          error: existing ? existing.error : null
+        };
+
+        if (isDir) {
+          traverse(fullPath);
+        }
+      } catch (e) {
+        console.error(`Error reading stats for ${file}:`, e);
+      }
+    });
+  }
+
+  traverse(normDirPath);
 
   userState.items = items;
-  logMessage(`Scanned directory: ${dirPath}. Found ${Object.keys(items).length} items.`, 'success', userId);
+  logMessage(`Scanned directory: ${normDirPath}. Found ${Object.keys(items).length} items.`, 'success', userId);
   return Object.values(items);
 }
 
@@ -194,11 +228,10 @@ export function zipFolder(folderPath, outputPath, onProgress, userId = 'default'
 export async function unzipFile(zipPath, outputPath, onProgress, userId = 'default') {
   console.log('ZIP PATH:', zipPath);
   console.log('OUTPUT PATH:', outputPath);
-  const fileExists = fs.existsSync(zipPath);
-  console.log('Exists:', fileExists);
-  if (fileExists) {
-    console.log('Size:', fs.statSync(zipPath).size);
+  if (!fs.existsSync(zipPath)) {
+    throw new Error('ZIP file does not exist');
   }
+  console.log('Size:', fs.statSync(zipPath).size);
 
   logMessage(`[UNZIP] Found ZIP file: ${path.basename(zipPath)}`, 'info', userId);
   logMessage(`[UNZIP] Extracting to directory: ${outputPath}`, 'info', userId);
@@ -213,17 +246,23 @@ export async function unzipFile(zipPath, outputPath, onProgress, userId = 'defau
     return;
   }
 
-  fs.mkdirSync(outputPath, { recursive: true });
+  const resolvedDestPath = path.resolve(outputPath);
+  fs.mkdirSync(resolvedDestPath, { recursive: true });
 
   for (let i = 0; i < total; i++) {
     const entry = zipEntries[i];
     try {
+      const targetFilePath = path.join(resolvedDestPath, entry.entryName);
+      const resolvedTargetFilePath = path.resolve(targetFilePath);
+      if (!resolvedTargetFilePath.startsWith(resolvedDestPath)) {
+        throw new Error(`Directory traversal attempt detected in entry: ${entry.entryName}`);
+      }
+
       if (entry.isDirectory) {
-        fs.mkdirSync(path.join(outputPath, entry.entryName), { recursive: true });
+        fs.mkdirSync(resolvedTargetFilePath, { recursive: true });
       } else {
-        const targetFilePath = path.join(outputPath, entry.entryName);
-        fs.mkdirSync(path.dirname(targetFilePath), { recursive: true });
-        zip.extractEntryTo(entry, outputPath, true, true);
+        fs.mkdirSync(path.dirname(resolvedTargetFilePath), { recursive: true });
+        zip.extractEntryTo(entry, resolvedDestPath, true, true);
       }
     } catch (err) {
       console.error(`Failed to extract entry ${entry.entryName} from ${path.basename(zipPath)}:`, err);
@@ -262,11 +301,12 @@ class ProcessQueue {
   }
 
   add(itemPath, operationType) {
-    if (this.queue.some(q => q.path === itemPath) || this.active.some(a => a.path === itemPath)) {
+    const normPath = normalizePath(itemPath);
+    if (this.queue.some(q => normalizePath(q.path) === normPath) || this.active.some(a => normalizePath(a.path) === normPath)) {
       return;
     }
-    this.queue.push({ path: itemPath, type: operationType });
-    updateItemStatus(itemPath, { status: 'Waiting', progress: 0, error: null }, this.userId);
+    this.queue.push({ path: normPath, type: operationType });
+    updateItemStatus(normPath, { status: 'Waiting', progress: 0, error: null }, this.userId);
   }
 
   async start() {
@@ -326,10 +366,10 @@ class ProcessQueue {
 
   async executeTask(task) {
     const userState = getUserState(this.userId);
-    const resolvedPath = path.resolve(task.path);
-    const item = userState.items[task.path] || userState.items[resolvedPath] || Object.values(userState.items).find(i => path.resolve(i.path) === resolvedPath);
+    const normPath = normalizePath(task.path);
+    const item = userState.items[normPath];
     if (!item) {
-      this.taskFinished(task, false, 'Item not found in state');
+      this.taskFinished(task, false, `Item not found in state: ${task.path}`);
       return;
     }
 
@@ -353,10 +393,9 @@ class ProcessQueue {
     this.notifyClients();
     logMessage(`[ZIP] Scanning files in directory: ${item.path}`, 'info', this.userId);
 
-    const userState = getUserState(this.userId);
-    const parentDir = userState.currentDirectory;
     const baseName = path.basename(item.path);
-    let targetZipPath = path.join(parentDir, `${baseName}.zip`);
+    const itemDir = path.dirname(item.path);
+    let targetZipPath = normalizePath(path.join(itemDir, `${baseName}.zip`));
 
     if (isZipUpToDate(item.path, targetZipPath, this.userId)) {
       logMessage(`[ZIP] Zip archive for ${baseName} is already up to date. Skipping compression.`, 'success', this.userId);
@@ -373,23 +412,23 @@ class ProcessQueue {
       } else if (decision === 'timestamp') {
         const todayStr = getYYYYMMDD(new Date());
         let newZipName = `${baseName}_${todayStr}.zip`;
-        let tempZipPath = path.join(parentDir, newZipName);
+        let tempZipPath = path.join(itemDir, newZipName);
 
         if (fs.existsSync(tempZipPath)) {
           const fullTimeStr = getYYYYMMDD_HHMM(new Date());
           newZipName = `${baseName}_${fullTimeStr}.zip`;
-          tempZipPath = path.join(parentDir, newZipName);
+          tempZipPath = path.join(itemDir, newZipName);
           
           if (fs.existsSync(tempZipPath)) {
             let count = 1;
-            while (fs.existsSync(path.join(parentDir, `${baseName}_${fullTimeStr}_${count}.zip`))) {
+            while (fs.existsSync(path.join(itemDir, `${baseName}_${fullTimeStr}_${count}.zip`))) {
               count++;
             }
             newZipName = `${baseName}_${fullTimeStr}_${count}.zip`;
-            tempZipPath = path.join(parentDir, newZipName);
+            tempZipPath = path.join(itemDir, newZipName);
           }
         }
-        targetZipPath = tempZipPath;
+        targetZipPath = normalizePath(tempZipPath);
         logMessage(`[ZIP] Zip already exists for ${baseName}. Renamed output file to ${newZipName}`, 'warning', this.userId);
       } else {
         logMessage(`[ZIP] Zip archive already exists for ${baseName}. Overwriting file.`, 'info', this.userId);
@@ -429,12 +468,9 @@ class ProcessQueue {
     this.notifyClients();
     logMessage(`[UNZIP] Reading ZIP archive structure for: ${item.name}`, 'info', this.userId);
 
-    const userState = getUserState(this.userId);
-    const parentDir = userState.currentDirectory;
-    console.log('userState.currentDirectory:', parentDir);
-
     const baseName = path.basename(item.path, '.zip');
-    let targetDestPath = path.join(parentDir, baseName);
+    const itemDir = path.dirname(item.path);
+    let targetDestPath = normalizePath(path.join(itemDir, baseName));
 
     if (fs.existsSync(targetDestPath)) {
       const decision = await this.resolveExtractionConflict(item.path, targetDestPath);
@@ -445,21 +481,21 @@ class ProcessQueue {
       } else if (decision === 'timestamp') {
         const todayStr = getYYYYMMDD(new Date());
         let newDirName = `${baseName}_${todayStr}`;
-        let tempPath = path.join(parentDir, newDirName);
+        let tempPath = path.join(itemDir, newDirName);
         if (fs.existsSync(tempPath)) {
           const fullTimeStr = getYYYYMMDD_HHMM(new Date());
           newDirName = `${baseName}_${fullTimeStr}`;
-          tempPath = path.join(parentDir, newDirName);
+          tempPath = path.join(itemDir, newDirName);
           if (fs.existsSync(tempPath)) {
             let count = 1;
-            while (fs.existsSync(path.join(parentDir, `${baseName}_${fullTimeStr}_${count}`))) {
+            while (fs.existsSync(path.join(itemDir, `${baseName}_${fullTimeStr}_${count}`))) {
               count++;
             }
             newDirName = `${baseName}_${fullTimeStr}_${count}`;
-            tempPath = path.join(parentDir, newDirName);
+            tempPath = path.join(itemDir, newDirName);
           }
         }
-        targetDestPath = tempPath;
+        targetDestPath = normalizePath(tempPath);
         logMessage(`[UNZIP] Destination folder exists for ${item.name}. Output folder renamed to ${newDirName}`, 'warning', this.userId);
       } else if (decision === 'overwrite') {
         logMessage(`[UNZIP] Destination folder exists for ${item.name}. Overwriting existing contents.`, 'info', this.userId);
@@ -482,7 +518,7 @@ class ProcessQueue {
     }, this.userId);
 
     updateItemStatus(item.path, { status: 'Completed', progress: 100 }, this.userId);
-    logMessage(`[UNZIP] Archive ${item.name} extracted successfully to ${baseName}/`, 'success', this.userId);
+    logMessage(`[UNZIP] Archive ${item.name} extracted successfully to ${path.basename(targetDestPath)}/`, 'success', this.userId);
   }
 
   resolveExtractionConflict(itemPath, destPath) {
@@ -492,16 +528,17 @@ class ProcessQueue {
       return Promise.resolve(policy);
     }
 
+    const normItemPath = normalizePath(itemPath);
     return new Promise((resolve) => {
-      updateItemStatus(itemPath, { status: 'Waiting' }, this.userId);
-      logMessage(`Conflict detected for ${path.basename(itemPath)}. Waiting for user resolution.`, 'warning', this.userId);
+      updateItemStatus(normItemPath, { status: 'Waiting' }, this.userId);
+      logMessage(`Conflict detected for ${path.basename(normItemPath)}. Waiting for user resolution.`, 'warning', this.userId);
       this.notifyClients();
 
-      const conflictKey = `${this.userId}:${itemPath}`;
+      const conflictKey = `${this.userId}:${normItemPath}`;
       activeConflicts.set(conflictKey, {
         userId: this.userId,
         type: 'extract',
-        itemPath,
+        itemPath: normItemPath,
         destPath,
         resolve: (decision) => {
           activeConflicts.delete(conflictKey);
@@ -518,16 +555,17 @@ class ProcessQueue {
       return Promise.resolve(policy);
     }
 
+    const normItemPath = normalizePath(itemPath);
     return new Promise((resolve) => {
-      updateItemStatus(itemPath, { status: 'Waiting' }, this.userId);
-      logMessage(`Conflict detected for ${path.basename(itemPath)}.zip. Waiting for user resolution.`, 'warning', this.userId);
+      updateItemStatus(normItemPath, { status: 'Waiting' }, this.userId);
+      logMessage(`Conflict detected for ${path.basename(normItemPath)}.zip. Waiting for user resolution.`, 'warning', this.userId);
       this.notifyClients();
 
-      const conflictKey = `${this.userId}:${itemPath}`;
+      const conflictKey = `${this.userId}:${normItemPath}`;
       activeConflicts.set(conflictKey, {
         userId: this.userId,
         type: 'zip',
-        itemPath,
+        itemPath: normItemPath,
         destPath: destZipPath,
         resolve: (decision) => {
           activeConflicts.delete(conflictKey);
@@ -538,18 +576,12 @@ class ProcessQueue {
   }
 
   taskFinished(task, success, errorMsg = null) {
-    this.active = this.active.filter(a => a.path !== task.path);
+    const normPath = normalizePath(task.path);
+    this.active = this.active.filter(a => normalizePath(a.path) !== normPath);
     const userState = getUserState(this.userId);
     userState.operations.processed++;
     if (success) {
       userState.operations.success++;
-      try {
-        if (userState.currentDirectory) {
-          scanSelectedDirectory(userState.currentDirectory, this.userId);
-        }
-      } catch (e) {
-        console.error('Failed to rescan directory after task completion:', e);
-      }
     } else {
       userState.operations.failed++;
     }

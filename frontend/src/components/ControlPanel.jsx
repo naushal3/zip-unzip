@@ -7,9 +7,10 @@ import {
   Download, 
   RefreshCw,
   FileArchive,
-  FolderOpen
+  FolderOpen,
+  FolderDown
 } from 'lucide-react';
-import { getDownloadAllUrl } from '../utils/api';
+import { getDownloadAllUrl, getDownloadUnzippedUrl } from '../utils/api';
 
 export default function ControlPanel({
   items,
@@ -102,50 +103,26 @@ export default function ControlPanel({
                 </>
               )}
 
-              {/* Standard Batch Actions */}
+              {/* Download Actions when no selection is present */}
               {!hasSelection && (
                 <>
-                  {items.length > 0 && (
-                    <button
-                      onClick={() => onProcessBatch(items.map(i => i.path), 'auto')}
-                      className="px-4 py-2 bg-brand hover:bg-brand-hover text-white rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm shadow-md"
-                      title="Smart process all items (ZIP folders / Extract archives)"
-                    >
-                      <Play className="w-4 h-4" />
-                      <span>Process All (Smart)</span>
-                    </button>
-                  )}
-                  {foldersInList.length > 0 && (
-                    <button
-                      onClick={() => onProcessBatch(foldersInList.map(f => f.path), 'zip')}
-                      className="px-4 py-2 bg-brand/10 hover:bg-brand/20 border border-brand/30 text-brand rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm"
-                    >
-                      <FileArchive className="w-4 h-4" />
-                      <span>Zip All Folders</span>
-                    </button>
-                  )}
-                  {zipsInList.length > 0 && (
-                    <button
-                      onClick={() => onProcessBatch(zipsInList.map(z => z.path), 'extract')}
-                      className="px-4 py-2 bg-warning/10 hover:bg-warning/20 border border-warning/30 text-warning rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm"
-                    >
-                      <FolderOpen className="w-4 h-4" />
-                      <span>Extract All ZIPs</span>
-                    </button>
-                  )}
+                  <a
+                    href={getDownloadAllUrl(currentDirectory)}
+                    className="px-4 py-2 bg-success/15 hover:bg-success/25 border border-success/30 text-success rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm"
+                    title="Download all ZIP files in this folder combined as a single ZIP archive"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download ZIP Files</span>
+                  </a>
+                  <a
+                    href={getDownloadUnzippedUrl(currentDirectory)}
+                    className="px-4 py-2 bg-brand/15 hover:bg-brand/25 border border-brand/30 text-brand rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm"
+                    title="Download all extracted and unzipped files combined as a single ZIP archive"
+                  >
+                    <FolderDown className="w-4 h-4" />
+                    <span>Download Unzip Files</span>
+                  </a>
                 </>
-              )}
-
-              {/* Combined Download */}
-              {zipsInList.length > 0 && (
-                <a
-                  href={getDownloadAllUrl(currentDirectory)}
-                  className="px-4 py-2 bg-success/15 hover:bg-success/25 border border-success/30 text-success rounded-xl font-medium flex items-center gap-1.5 transition-all active:scale-95 text-sm"
-                  title="Download all ZIP files in this folder combined as a single ZIP archive"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download All Combined</span>
-                </a>
               )}
 
               {/* Rescan Button */}

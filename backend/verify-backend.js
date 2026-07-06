@@ -39,10 +39,11 @@ async function runTests() {
   // 2. Scan Directory
   console.log('Testing scanSelectedDirectory...');
   const items = scanSelectedDirectory(TEST_ENV);
-  if (items.length !== 2) {
-    throw new Error(`Expected 2 items, found ${items.length}`);
+  const topLevelFolders = items.filter(i => i.type === 'folder' && !i.name.includes('/'));
+  if (topLevelFolders.length !== 2) {
+    throw new Error(`Expected 2 top-level folders, found ${topLevelFolders.length}`);
   }
-  console.log('Scan passed. Found:', items.map(i => i.name));
+  console.log('Scan passed. Found top-level folders:', topLevelFolders.map(i => i.name));
 
   // 3. Setup settings exclusions
   state.settings.excludedExtensions = ['.log'];

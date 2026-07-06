@@ -14,7 +14,8 @@ import {
   saveSettings,
   clearItems,
   updateItemStatus,
-  getAppState
+  getAppState,
+  normalizePath
 } from './store.js';
 import {
   scanSelectedDirectory,
@@ -355,20 +356,21 @@ app.post('/api/process', (req, res) => {
 
   items.forEach(itemPath => {
     let taskAction = action;
+    const normItemPath = normalizePath(itemPath);
     if (action === 'auto') {
-      const item = userState.items[itemPath];
+      const item = userState.items[normItemPath];
       if (item) {
         taskAction = (item.type === 'folder' || item.type === 'file') ? 'zip' : 'extract';
       } else {
         try {
-          const stat = fs.statSync(itemPath);
-          taskAction = (stat.isDirectory() || !itemPath.toLowerCase().endsWith('.zip')) ? 'zip' : 'extract';
+          const stat = fs.statSync(normItemPath);
+          taskAction = (stat.isDirectory() || !normItemPath.toLowerCase().endsWith('.zip')) ? 'zip' : 'extract';
         } catch (e) {
-          taskAction = itemPath.toLowerCase().endsWith('.zip') ? 'extract' : 'zip';
+          taskAction = normItemPath.toLowerCase().endsWith('.zip') ? 'extract' : 'zip';
         }
       }
     }
-    userQueue.add(itemPath, taskAction);
+    userQueue.add(normItemPath, taskAction);
   });
 
   userQueue.start();
@@ -434,7 +436,7 @@ app.post('/api/resolve-conflict', (req, res) => {
     return res.status(403).json({ error: 'Access Denied' });
   }
 
-  const conflictKey = `${userId}:${itemPath}`;
+  const conflictKey = `${userId}:${normalizePath(itemPath)}`;
   const conflict = activeConflicts.get(conflictKey);
   if (!conflict) {
     return res.status(404).json({ error: 'No pending conflict for this path' });
@@ -522,6 +524,66 @@ app.get('/api/download-all', (req, res) => {
 
     zips.forEach(zipPath => {
       archive.file(zipPath, { name: path.basename(zipPath) });
+    });
+
+    archive.finalize();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Download all unzipped/extracted files as a single combined zip stream
+app.get('/api/download-unzipped', (req, res) => {
+  const userId = req.headers['x-user-id'] || req.query.userId || 'default';
+  const userState = getUserState(userId);
+  const parentDir = req.query.directory || userState.currentDirectory;
+
+  if (!parentDir) {
+    return res.status(400).json({ error: 'No directory selected' });
+  }
+
+  if (!isPathSecure(parentDir, userId)) {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  try {
+    const files = fs.readdirSync(parentDir);
+    const unzipped = files
+      .map(file => path.join(parentDir, file))
+      .filter(fullPath => {
+        try {
+          const baseName = path.basename(fullPath);
+          if (baseName.startsWith('.')) return false;
+          if (baseName.toLowerCase().endsWith('.zip')) return false;
+          if (['node_modules', '.git', '.firebase', '.cache'].includes(baseName)) return false;
+          
+          return fs.existsSync(fullPath);
+        } catch (e) {
+          return false;
+        }
+      });
+
+    if (unzipped.length === 0) {
+      return res.status(404).json({ error: 'No unzipped files or directories found to combine' });
+    }
+
+    res.attachment('combined_unzipped.zip');
+    const archive = archiver('zip', { zlib: { level: 6 } });
+
+    archive.on('error', (err) => {
+      res.status(500).send({ error: err.message });
+    });
+
+    archive.pipe(res);
+
+    unzipped.forEach(itemPath => {
+      const stat = fs.statSync(itemPath);
+      const name = path.basename(itemPath);
+      if (stat.isDirectory()) {
+        archive.directory(itemPath, name);
+      } else {
+        archive.file(itemPath, { name });
+      }
     });
 
     archive.finalize();
